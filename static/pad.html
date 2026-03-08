@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pad</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="/static/style.css?v=3">
+</head>
+<body class="pad-body">
+
+<!-- Password dialog (hidden by default) -->
+<div class="overlay" id="auth-overlay" style="display:none">
+  <div class="auth-dialog">
+    <h2>Enter password</h2>
+    <p class="auth-desc">This pad requires a password to access.</p>
+    <form id="auth-form">
+      <input type="password" id="auth-password" placeholder="password" autocomplete="off" autofocus>
+      <button type="submit" class="btn">Open</button>
+    </form>
+    <p class="auth-error" id="auth-error"></p>
+  </div>
+</div>
+
+<!-- Editor (hidden by default) -->
+<div class="editor-wrap" id="editor-wrap" style="display:none">
+  <div class="toolbar">
+    <a href="/" class="toolbar-brand">Pad</a>
+    <span class="toolbar-name" id="pad-name"></span>
+    <span class="toolbar-lock" id="lock-icon" title="Encrypted"></span>
+    <span class="toolbar-spacer"></span>
+    <span class="toolbar-info" id="line-info">Ln 1, Col 1</span>
+    <span class="toolbar-status" id="status">connecting</span>
+    <span class="toolbar-clients" id="clients" title="Connected users"></span>
+  </div>
+  <div class="editor">
+    <div class="gutter" id="gutter"></div>
+    <textarea id="text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+  </div>
+</div>
+
+<script>
+(function() {
+  const padName = window.location.pathname.replace(/^\/+/, '');
+  if (!padName || padName === 'index.html' || padName.startsWith('static/')) {
+    window.location.href = '/';
+    return;
+  }
+
+  // --- Crypto helpers (AES-256-GCM with PBKDF2) ---
+  const subtle = (window.crypto || window.msCrypto).subtle;
+
+  function hexToBytes(hex) {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2)
+      bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+    return bytes;
+  }
+
+  async function deriveKey(password, saltHex) {
+    const keyMaterial = await subtle.importKey(
+      'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
+    );
+    return subtle.deriveKey(
+      { name: 'PBKDF2', salt: hexToBytes(saltHex), iterations: 600000, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  }
+
+  async function encrypt(key, plaintext) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
+    const combined = new Uint8Array(iv.length + ct.byteLength);
+    combined.set(iv);
+    combined.set(new Uint8Array(ct), iv.length);
+    return btoa(String.fromCharCode(...combined));
+  }
+
+  async function decrypt(key, b64) {
+    if (!b64) return '';
+    try {
+      const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      return new TextDecoder().decode(
+        await subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, key, raw.slice(12))
+      );
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // --- State ---
+  let password = '';
+  let aesKey = null;
+  let isEncrypted = false;
+  let ws = null;
+  let currentVersion = 0;
+  let sendTimer = null;
+  let isTyping = false;
+  let typingTimer = null;
+  let reconnectDelay = 1000;
+  let connected = false;
+  let authenticated = false;
+  let hasPassword = false;  // true = password was provided (from landing or dialog)
+  let wantsCreate = false;  // true = create new pad (only from landing page)
+  let keyReady = null;  // Promise that resolves when AES key is derived
+
+  const textarea = document.getElementById('text');
+  const gutter = document.getElementById('gutter');
+  const statusEl = document.getElementById('status');
+  const clientsEl = document.getElementById('clients');
+  const lineInfoEl = document.getElementById('line-info');
+  const authOverlay = document.getElementById('auth-overlay');
+  const editorWrap = document.getElementById('editor-wrap');
+  const authError = document.getElementById('auth-error');
+  const lockIcon = document.getElementById('lock-icon');
+
+  document.getElementById('pad-name').textContent = padName;
+  document.title = padName + ' \u2014 Pad';
+
+  // --- Determine how we got here ---
+  var storedFor = sessionStorage.getItem('pad_password_for');
+  var storedPw = sessionStorage.getItem('pad_password');
+
+  if (storedFor === padName && storedPw !== null) {
+    // Came from landing page — password already entered, never show dialog
+    password = storedPw;
+    hasPassword = true;
+    wantsCreate = sessionStorage.getItem('pad_create') === '1';
+    sessionStorage.removeItem('pad_password');
+    sessionStorage.removeItem('pad_password_for');
+    sessionStorage.removeItem('pad_create');
+    showEditor();
+    connect();
+  } else {
+    // Direct URL access — try empty password first (works for open pads)
+    password = '';
+    hasPassword = false;
+    wantsCreate = false;
+    connect();
+  }
+
+  // --- Auth dialog (only for direct access when pad is protected) ---
+  document.getElementById('auth-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    password = document.getElementById('auth-password').value;
+    hasPassword = true;
+    authError.textContent = '';
+    connect();
+  });
+
+  function showEditor() {
+    authOverlay.style.display = 'none';
+    editorWrap.style.display = '';
+  }
+
+  function showAuthDialog(errorMsg) {
+    authOverlay.style.display = '';
+    editorWrap.style.display = 'none';
+    authError.textContent = errorMsg || '';
+    document.getElementById('auth-password').value = '';
+    document.getElementById('auth-password').focus();
+  }
+
+  // --- Line numbers (mirror technique for wrapped lines) ---
+  // Mirror must be on document.body — NOT inside .editor (overflow:hidden clips it)
+  var mirror = document.createElement('div');
+  mirror.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(mirror);
+  let gutterUpdatePending = false;
+
+  function updateGutter() {
+    if (gutterUpdatePending) return;
+    gutterUpdatePending = true;
+    requestAnimationFrame(function() {
+      gutterUpdatePending = false;
+      doUpdateGutter();
+    });
+  }
+
+  function doUpdateGutter() {
+    var cs = window.getComputedStyle(textarea);
+    var contentWidth = textarea.clientWidth
+      - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    if (contentWidth <= 0) {
+      // Editor not visible yet, retry next frame
+      gutterUpdatePending = true;
+      requestAnimationFrame(function() { gutterUpdatePending = false; doUpdateGutter(); });
+      return;
+    }
+    mirror.style.cssText =
+      'position:absolute;top:0;left:-9999px;visibility:hidden;' +
+      'white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;' +
+      'font:' + cs.font + ';letter-spacing:' + cs.letterSpacing +
+      ';line-height:' + cs.lineHeight +
+      ';tab-size:' + cs.tabSize + ';padding:0;border:0;margin:0;' +
+      'width:' + contentWidth + 'px;';
+
+    var lines = textarea.value.split('\n');
+    mirror.innerHTML = '';
+    for (var i = 0; i < lines.length; i++) {
+      var div = document.createElement('div');
+      div.textContent = lines[i] || '\u00a0';
+      mirror.appendChild(div);
+    }
+    var html = '';
+    for (var i = 0; i < mirror.children.length; i++) {
+      var h = mirror.children[i].offsetHeight;
+      html += '<div class="gutter-line" style="height:' + h + 'px">' + (i + 1) + '</div>';
+    }
+    gutter.innerHTML = html;
+  }
+
+  textarea.addEventListener('scroll', function() { gutter.scrollTop = textarea.scrollTop; });
+
+  var resizeTimer;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(doUpdateGutter, 100);
+  });
+
+  // --- Cursor position ---
+  function updateLineInfo() {
+    const val = textarea.value;
+    const pos = textarea.selectionStart;
+    const before = val.substring(0, pos);
+    const line = before.split('\n').length;
+    const col = pos - before.lastIndexOf('\n');
+    const total = val.split('\n').length;
+    lineInfoEl.textContent = 'Ln ' + line + '/' + total + ', Col ' + col;
+  }
+
+  textarea.addEventListener('click', updateLineInfo);
+  textarea.addEventListener('keyup', updateLineInfo);
+
+  // --- Tab key ---
+  textarea.addEventListener('keydown', function(e) {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = this.selectionStart;
+      const end = this.selectionEnd;
+      this.value = this.value.substring(0, start) + '  ' + this.value.substring(end);
+      this.selectionStart = this.selectionEnd = start + 2;
+      onInput();
+    }
+  });
+
+  // --- Encrypt/decrypt wrappers ---
+  async function encryptIfNeeded(plaintext) {
+    if (!isEncrypted) return plaintext;
+    if (!aesKey && keyReady) await keyReady;
+    if (!aesKey) return plaintext;
+    return await encrypt(aesKey, plaintext);
+  }
+
+  async function decryptIfNeeded(text) {
+    if (!isEncrypted) return text;
+    if (!aesKey && keyReady) await keyReady;
+    if (!aesKey) return text;
+    if (!text) return '';
+    const result = await decrypt(aesKey, text);
+    if (result === null) {
+      setStatus('decrypt error', 'err');
+      return '';
+    }
+    return result;
+  }
+
+  // --- WebSocket ---
+  function setStatus(text, type) {
+    statusEl.textContent = text;
+    statusEl.className = 'toolbar-status status-' + type;
+  }
+
+  function connect() {
+    if (ws) { try { ws.close(); } catch(e) {} }
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws/' + padName);
+
+    ws.onopen = function() {
+      var msg = { type: 'auth', password: password };
+      if (wantsCreate) msg.create = true;
+      ws.send(JSON.stringify(msg));
+    };
+
+    ws.onmessage = async function(event) {
+      const data = JSON.parse(event.data);
+
+      if (data.type === 'auth_fail') {
+        ws.close();
+        authenticated = false;
+        if (hasPassword) {
+          showAuthDialog('Authentication failed.');
+        } else {
+          // Direct access, empty password didn't work — pad is protected or missing
+          showAuthDialog('');
+        }
+        return;
+      }
+
+      if (data.type === 'auth_ok') {
+        authenticated = true;
+        isEncrypted = data.encrypted;
+        if (isEncrypted) {
+          // Store promise so init/update handlers can await it
+          keyReady = deriveKey(password, data.salt).then(function(k) { aesKey = k; });
+          await keyReady;
+          lockIcon.textContent = '\u{1F512}';
+        } else {
+          keyReady = null;
+          lockIcon.textContent = '';
+        }
+        showEditor();
+        connected = true;
+        reconnectDelay = 1000;
+        setStatus('connected', 'ok');
+        textarea.focus();
+        return;
+      }
+
+      if (data.type === 'init') {
+        if (!isTyping) {
+          const scrollTop = textarea.scrollTop;
+          textarea.value = await decryptIfNeeded(data.text);
+          textarea.scrollTop = scrollTop;
+        }
+        currentVersion = data.version;
+        clientsEl.textContent = data.clients + (data.clients === 1 ? ' user' : ' users');
+        updateGutter();
+        updateLineInfo();
+      }
+
+      if (data.type === 'update') {
+        if (!isTyping) {
+          const pos = textarea.selectionStart;
+          const scrollTop = textarea.scrollTop;
+          const oldLen = textarea.value.length;
+          textarea.value = await decryptIfNeeded(data.text);
+          const newLen = textarea.value.length;
+          const delta = newLen - oldLen;
+          textarea.selectionStart = textarea.selectionEnd = Math.max(0, Math.min(pos + delta, newLen));
+          textarea.scrollTop = scrollTop;
+          updateGutter();
+          updateLineInfo();
+        }
+        currentVersion = data.version;
+      }
+
+      if (data.type === 'clients') {
+        clientsEl.textContent = data.count + (data.count === 1 ? ' user' : ' users');
+      }
+
+      if (data.type === 'error') {
+        setStatus(data.message, 'err');
+        setTimeout(function() { if (connected) setStatus('connected', 'ok'); }, 3000);
+      }
+    };
+
+    ws.onclose = function() {
+      connected = false;
+      if (!authenticated) return;
+      setStatus('disconnected', 'err');
+      clientsEl.textContent = '';
+      setTimeout(function() {
+        setStatus('reconnecting', 'warn');
+        connect();
+      }, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
+    };
+
+    ws.onerror = function() {};
+  }
+
+  async function doSend() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'update', text: await encryptIfNeeded(textarea.value) }));
+    }
+  }
+
+  function onInput() {
+    isTyping = true;
+    clearTimeout(typingTimer);
+    typingTimer = setTimeout(function() { isTyping = false; }, 1000);
+    updateGutter();
+    updateLineInfo();
+    clearTimeout(sendTimer);
+    sendTimer = setTimeout(doSend, 300);
+  }
+
+  textarea.addEventListener('input', onInput);
+  updateGutter();
+})();
+</script>
+</body>
+</html>

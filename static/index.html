@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pad</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="/static/style.css?v=3">
+</head>
+<body>
+<div class="landing">
+  <h1>Pad</h1>
+  <p class="subtitle">Collaborative text editor. No accounts, no formatting. Just text.</p>
+
+  <div class="landing-sections">
+    <div class="landing-section">
+      <h2>Create new</h2>
+      <form id="create-form" class="landing-form">
+        <input type="text" id="create-name" placeholder="pad name" autocomplete="off" spellcheck="false" required>
+        <input type="password" id="create-password" placeholder="password (empty = open)" autocomplete="off">
+        <button type="submit" class="btn">Create</button>
+      </form>
+      <p class="form-hint" id="create-error"></p>
+    </div>
+
+    <div class="landing-divider"></div>
+
+    <div class="landing-section">
+      <h2>Open existing</h2>
+      <form id="open-form" class="landing-form">
+        <input type="text" id="open-name" placeholder="pad name" autocomplete="off" spellcheck="false" required>
+        <input type="password" id="open-password" placeholder="password" autocomplete="off">
+        <button type="submit" class="btn btn-secondary">Open</button>
+      </form>
+      <p class="form-hint" id="open-error"></p>
+    </div>
+  </div>
+
+  <div class="landing-info">
+    <p>Protected pads are encrypted in your browser.</p>
+    <p>The server stores only encrypted content.</p>
+  </div>
+</div>
+<script>
+(function() {
+  function clean(name) {
+    return name.trim().replace(/^\/+/, '').replace(/[^a-zA-Z0-9\-]/g, '');
+  }
+
+  // Store password and mode temporarily for the pad page to pick up
+  function goToPad(name, password, isCreate) {
+    sessionStorage.setItem('pad_password', password || '');
+    sessionStorage.setItem('pad_password_for', name);
+    if (isCreate) sessionStorage.setItem('pad_create', '1');
+    else sessionStorage.removeItem('pad_create');
+    window.location.href = '/' + name;
+  }
+
+  document.getElementById('create-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var name = clean(document.getElementById('create-name').value);
+    var password = document.getElementById('create-password').value;
+    var errorEl = document.getElementById('create-error');
+
+    if (!name || name.length < 3) {
+      errorEl.textContent = 'Name must be at least 3 characters (letters, numbers, hyphens).';
+      return;
+    }
+    if (name.length > 64) {
+      errorEl.textContent = 'Name too long (max 64 characters).';
+      return;
+    }
+    errorEl.textContent = '';
+    goToPad(name, password, true);
+  });
+
+  document.getElementById('open-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var name = clean(document.getElementById('open-name').value);
+    var password = document.getElementById('open-password').value;
+    var errorEl = document.getElementById('open-error');
+
+    if (!name || name.length < 3) {
+      errorEl.textContent = 'Enter a valid pad name.';
+      return;
+    }
+    errorEl.textContent = '';
+    goToPad(name, password, false);
+  });
+})();
+</script>
+</body>
+</html>

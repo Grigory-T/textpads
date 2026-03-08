@@ -1,0 +1,461 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #fafafa;
+  --fg: #222;
+  --muted: #888;
+  --border: #ddd;
+  --gutter-bg: #f0f0f0;
+  --toolbar-bg: #fff;
+  --btn-bg: #333;
+  --btn-fg: #fff;
+  --btn-sec-bg: #e8e8e8;
+  --btn-sec-fg: #333;
+  --mono: "SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* --- Landing page --- */
+
+.landing {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 60px 24px 40px;
+  text-align: center;
+}
+
+.landing h1 {
+  font-size: 28px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  letter-spacing: -0.5px;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin-bottom: 36px;
+  font-size: 15px;
+}
+
+.landing-sections {
+  text-align: left;
+}
+
+.landing-section h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.landing-divider {
+  border-top: 1px solid var(--border);
+  margin: 24px 0;
+}
+
+.landing-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 16px minimum prevents iOS auto-zoom on focus */
+.landing-form input {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 16px;
+  font-family: var(--sans);
+  background: #fff;
+  outline: none;
+}
+
+.landing-form input[type="text"] {
+  font-family: var(--mono);
+}
+
+.landing-form input:focus {
+  border-color: #999;
+}
+
+.landing-form .btn {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.form-hint {
+  color: #c33;
+  font-size: 14px;
+  min-height: 18px;
+  margin-top: 4px;
+}
+
+.btn {
+  display: inline-block;
+  padding: 12px 28px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-family: var(--sans);
+  cursor: pointer;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  transition: opacity 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn:hover {
+  opacity: 0.85;
+}
+
+.btn:active {
+  opacity: 0.7;
+}
+
+.btn-secondary {
+  background: var(--btn-sec-bg);
+  color: var(--btn-sec-fg);
+}
+
+.landing-info {
+  margin-top: 40px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.landing-info p {
+  margin-bottom: 4px;
+}
+
+/* --- Auth dialog --- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+
+.auth-dialog {
+  max-width: 360px;
+  width: 100%;
+  text-align: center;
+}
+
+.auth-dialog h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.auth-desc {
+  color: var(--muted);
+  font-size: 14px;
+  margin-bottom: 20px;
+}
+
+.auth-dialog form {
+  display: flex;
+  gap: 8px;
+}
+
+.auth-dialog input {
+  flex: 1;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 16px;
+  font-family: var(--sans);
+  background: #fff;
+  outline: none;
+  min-width: 0;
+}
+
+.auth-dialog input:focus {
+  border-color: #999;
+}
+
+.auth-error {
+  color: #c33;
+  font-size: 14px;
+  margin-top: 12px;
+  min-height: 20px;
+}
+
+/* --- Pad page --- */
+
+.pad-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.editor-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  flex-shrink: 0;
+  min-height: 40px;
+}
+
+.toolbar-brand {
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--fg);
+  flex-shrink: 0;
+  padding: 2px 0;
+}
+
+.toolbar-name {
+  font-family: var(--mono);
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.toolbar-lock {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+.toolbar-info {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.toolbar-status {
+  font-size: 13px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.status-ok { color: #2a7d2a; }
+.status-warn { color: #b58900; }
+.status-err { color: #c33; }
+
+.toolbar-clients {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.editor {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.gutter {
+  width: 48px;
+  background: var(--gutter-bg);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  flex-shrink: 0;
+  padding: 10px 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.gutter-line {
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.5;
+  text-align: right;
+  padding-right: 8px;
+  color: #aaa;
+  overflow: hidden;
+}
+
+#text {
+  flex: 1;
+  border: none;
+  outline: none;
+  resize: none;
+  padding: 10px 14px;
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.5;
+  background: #fff;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  tab-size: 2;
+  -moz-tab-size: 2;
+  -webkit-overflow-scrolling: touch;
+}
+
+#text::placeholder {
+  color: #ccc;
+}
+
+/* --- Tablet (portrait) --- */
+
+@media (max-width: 768px) {
+  .toolbar {
+    gap: 10px;
+    padding: 8px 10px;
+  }
+
+  .toolbar-name {
+    max-width: 160px;
+  }
+
+  .gutter {
+    width: 44px;
+  }
+}
+
+/* --- Phone --- */
+
+@media (max-width: 600px) {
+  .landing {
+    padding: 40px 20px 24px;
+  }
+
+  .landing h1 {
+    font-size: 24px;
+  }
+
+  .subtitle {
+    font-size: 14px;
+    margin-bottom: 28px;
+  }
+
+  .landing-form .btn {
+    align-self: stretch;
+    text-align: center;
+  }
+
+  .toolbar {
+    gap: 6px;
+    padding: 6px 8px;
+    min-height: 36px;
+  }
+
+  .toolbar-brand {
+    font-size: 13px;
+  }
+
+  .toolbar-name {
+    font-size: 11px;
+    max-width: 120px;
+  }
+
+  .toolbar-info {
+    display: none;
+  }
+
+  .toolbar-status {
+    font-size: 11px;
+  }
+
+  .toolbar-clients {
+    font-size: 11px;
+  }
+
+  .gutter {
+    width: 36px;
+    padding: 8px 0;
+  }
+
+  .gutter-line {
+    font-size: 13px;
+    padding-right: 4px;
+  }
+
+  /* 16px prevents iOS zoom; slightly larger line-height for touch */
+  #text {
+    font-size: 16px;
+    line-height: 1.5;
+    padding: 8px 10px;
+  }
+
+  .auth-dialog form {
+    flex-direction: column;
+  }
+
+  .auth-dialog input {
+    width: 100%;
+  }
+
+  .auth-dialog .btn {
+    width: 100%;
+    text-align: center;
+  }
+}
+
+/* --- Small phone --- */
+
+@media (max-width: 380px) {
+  .toolbar-name {
+    max-width: 80px;
+    font-size: 10px;
+  }
+
+  .toolbar-lock {
+    display: none;
+  }
+
+  .gutter {
+    width: 30px;
+  }
+
+  .gutter-line {
+    font-size: 11px;
+    padding-right: 3px;
+  }
+}
+
+/* --- Landscape phone --- */
+
+@media (max-height: 500px) and (orientation: landscape) {
+  .toolbar {
+    min-height: 32px;
+    padding: 4px 8px;
+  }
+
+  .landing {
+    padding: 20px 24px;
+  }
+}

@@ -1,0 +1,31 @@
+[Unit]
+Description=Collaborative Text Pad Server
+After=network.target
+
+[Service]
+Type=simple
+User=pad
+Group=pad
+WorkingDirectory=/opt/pad
+ExecStart=/opt/pad/venv/bin/python3 /opt/pad/server.py
+Restart=always
+RestartSec=3
+Environment=PAD_DATA_DIR=/opt/pad/data
+Environment=PAD_HOST=127.0.0.1
+Environment=PAD_PORT=8765
+Environment=PAD_ALLOWED_ORIGINS=https://example.com
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/pad/data
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+
+[Install]
+WantedBy=multi-user.target
