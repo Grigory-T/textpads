@@ -291,9 +291,30 @@ html, body {
 }
 
 .editor {
-  display: block;
+  display: flex;
   overflow: visible;
   min-width: 0;
+  align-items: flex-start;
+}
+
+.gutter {
+  width: 48px;
+  background: var(--gutter-bg);
+  border-right: 1px solid var(--border);
+  flex-shrink: 0;
+  padding: 10px 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.gutter-line {
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.5;
+  text-align: right;
+  padding-right: 8px;
+  color: #738099;
+  overflow: hidden;
 }
 
 #text {
@@ -390,6 +411,16 @@ html, body {
     font-size: 11px;
   }
 
+  .gutter {
+    width: 36px;
+    padding: 8px 0;
+  }
+
+  .gutter-line {
+    font-size: 13px;
+    padding-right: 4px;
+  }
+
   /* 16px prevents iOS zoom; slightly larger line-height for touch */
   #text {
     font-size: 16px;
@@ -421,6 +452,15 @@ html, body {
 
   .toolbar-lock {
     display: none;
+  }
+
+  .gutter {
+    width: 30px;
+  }
+
+  .gutter-line {
+    font-size: 11px;
+    padding-right: 3px;
   }
 }
 
