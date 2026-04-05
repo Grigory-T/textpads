@@ -188,61 +188,17 @@
   }
 
   function autoResizeTextarea() {
-    updateGutter();
+    textarea.style.height = 'auto';
+    textarea.style.height = textarea.scrollHeight + 'px';
   }
-
-  var mirror = document.createElement('div');
-  mirror.setAttribute('aria-hidden', 'true');
-  document.body.appendChild(mirror);
-  let gutterUpdatePending = false;
 
   function updateGutter() {
-    if (gutterUpdatePending) return;
-    gutterUpdatePending = true;
-    requestAnimationFrame(function() {
-      gutterUpdatePending = false;
-      doUpdateGutter();
-    });
-  }
-
-  function doUpdateGutter() {
-    var cs = window.getComputedStyle(textarea);
-    var contentWidth = textarea.clientWidth
-      - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    if (contentWidth <= 0) {
-      gutterUpdatePending = true;
-      requestAnimationFrame(function() {
-        gutterUpdatePending = false;
-        doUpdateGutter();
-      });
-      return;
-    }
-    mirror.style.cssText =
-      'position:absolute;top:0;left:-9999px;visibility:hidden;' +
-      'white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;' +
-      'font:' + cs.font + ';letter-spacing:' + cs.letterSpacing +
-      ';line-height:' + cs.lineHeight + ';tab-size:' + cs.tabSize +
-      ';padding:0;border:0;margin:0;width:' + contentWidth + 'px;';
-
     var lines = textarea.value.split('\n');
-    mirror.innerHTML = '';
-    for (var i = 0; i < lines.length; i++) {
-      var div = document.createElement('div');
-      div.textContent = lines[i] || '\u00a0';
-      mirror.appendChild(div);
-    }
-
     var html = '';
-    var totalHeight = 0;
-    for (var i = 0; i < mirror.children.length; i++) {
-      var h = mirror.children[i].offsetHeight;
-      totalHeight += h;
-      html += '<div class="gutter-line" style="height:' + h + 'px">' + (i + 1) + '</div>';
+    for (var i = 0; i < lines.length; i++) {
+      html += '<div class="gutter-line">' + (i + 1) + '</div>';
     }
     gutter.innerHTML = html;
-
-    var verticalPadding = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-    textarea.style.height = (totalHeight + verticalPadding) + 'px';
   }
 
   var resizeTimer;
