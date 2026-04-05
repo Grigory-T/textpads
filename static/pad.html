@@ -34,7 +34,6 @@
     <span class="toolbar-clients" id="clients" title="Connected users"></span>
   </div>
   <div class="editor">
-    <div class="gutter" id="gutter"></div>
     <textarea id="text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
   </div>
 </div>
@@ -130,7 +129,6 @@
   let keyReady = null;  // Promise that resolves when AES key is derived
 
   const textarea = document.getElementById('text');
-  const gutter = document.getElementById('gutter');
   const statusEl = document.getElementById('status');
   const clientsEl = document.getElementById('clients');
   const lineInfoEl = document.getElementById('line-info');
@@ -186,58 +184,9 @@
     document.getElementById('auth-password').focus();
   }
 
-  // --- Line numbers (mirror technique for wrapped lines) ---
-  // Mirror must be on document.body — NOT inside .editor (overflow:hidden clips it)
-  var mirror = document.createElement('div');
-  mirror.setAttribute('aria-hidden', 'true');
-  document.body.appendChild(mirror);
-  let gutterUpdatePending = false;
-
-  function updateGutter() {
-    if (gutterUpdatePending) return;
-    gutterUpdatePending = true;
-    requestAnimationFrame(function() {
-      gutterUpdatePending = false;
-      doUpdateGutter();
-    });
-  }
-
   function autoResizeTextarea() {
     textarea.style.height = 'auto';
     textarea.style.height = textarea.scrollHeight + 'px';
-  }
-
-  function doUpdateGutter() {
-    var cs = window.getComputedStyle(textarea);
-    var contentWidth = textarea.clientWidth
-      - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    if (contentWidth <= 0) {
-      // Editor not visible yet, retry next frame
-      gutterUpdatePending = true;
-      requestAnimationFrame(function() { gutterUpdatePending = false; doUpdateGutter(); });
-      return;
-    }
-    mirror.style.cssText =
-      'position:absolute;top:0;left:-9999px;visibility:hidden;' +
-      'white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;' +
-      'font:' + cs.font + ';letter-spacing:' + cs.letterSpacing +
-      ';line-height:' + cs.lineHeight +
-      ';tab-size:' + cs.tabSize + ';padding:0;border:0;margin:0;' +
-      'width:' + contentWidth + 'px;';
-
-    var lines = textarea.value.split('\n');
-    mirror.innerHTML = '';
-    for (var i = 0; i < lines.length; i++) {
-      var div = document.createElement('div');
-      div.textContent = lines[i] || '\u00a0';
-      mirror.appendChild(div);
-    }
-    var html = '';
-    for (var i = 0; i < mirror.children.length; i++) {
-      var h = mirror.children[i].offsetHeight;
-      html += '<div class="gutter-line" style="height:' + h + 'px">' + (i + 1) + '</div>';
-    }
-    gutter.innerHTML = html;
   }
 
   var resizeTimer;
@@ -245,7 +194,6 @@
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function() {
       autoResizeTextarea();
-      doUpdateGutter();
     }, 100);
   });
 
@@ -314,7 +262,6 @@
     textarea.selectionStart = textarea.selectionEnd = Math.max(0, Math.min(pos + delta, newLen));
     window.scrollTo(0, scrollY);
     currentVersion = version;
-    updateGutter();
     updateLineInfo();
   }
 
@@ -455,7 +402,6 @@
     clearTimeout(typingTimer);
     typingTimer = setTimeout(function() { isTyping = false; }, 1000);
     autoResizeTextarea();
-    updateGutter();
     updateLineInfo();
     clearTimeout(sendTimer);
     sendTimer = setTimeout(doSend, 300);
@@ -463,7 +409,7 @@
 
   textarea.addEventListener('input', onInput);
   autoResizeTextarea();
-  updateGutter();
+  updateLineInfo();
 })();
 </script>
 </body>
