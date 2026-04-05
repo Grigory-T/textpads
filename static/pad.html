@@ -188,8 +188,7 @@
   }
 
   function autoResizeTextarea() {
-    textarea.style.height = 'auto';
-    textarea.style.height = textarea.scrollHeight + 'px';
+    updateGutter();
   }
 
   var mirror = document.createElement('div');
@@ -234,11 +233,16 @@
     }
 
     var html = '';
+    var totalHeight = 0;
     for (var i = 0; i < mirror.children.length; i++) {
       var h = mirror.children[i].offsetHeight;
+      totalHeight += h;
       html += '<div class="gutter-line" style="height:' + h + 'px">' + (i + 1) + '</div>';
     }
     gutter.innerHTML = html;
+
+    var verticalPadding = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    textarea.style.height = (totalHeight + verticalPadding) + 'px';
   }
 
   var resizeTimer;
