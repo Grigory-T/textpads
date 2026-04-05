@@ -175,6 +175,7 @@
   function showEditor() {
     authOverlay.style.display = 'none';
     editorWrap.style.display = '';
+    autoResizeTextarea();
   }
 
   function showAuthDialog(errorMsg) {
@@ -199,6 +200,11 @@
       gutterUpdatePending = false;
       doUpdateGutter();
     });
+  }
+
+  function autoResizeTextarea() {
+    textarea.style.height = 'auto';
+    textarea.style.height = textarea.scrollHeight + 'px';
   }
 
   function doUpdateGutter() {
@@ -234,12 +240,13 @@
     gutter.innerHTML = html;
   }
 
-  textarea.addEventListener('scroll', function() { gutter.scrollTop = textarea.scrollTop; });
-
   var resizeTimer;
   window.addEventListener('resize', function() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(doUpdateGutter, 100);
+    resizeTimer = setTimeout(function() {
+      autoResizeTextarea();
+      doUpdateGutter();
+    }, 100);
   });
 
   // --- Cursor position ---
@@ -298,13 +305,14 @@
   async function applyServerText(text, version, force) {
     if (isTyping && !force) return;
     const pos = textarea.selectionStart;
-    const scrollTop = textarea.scrollTop;
+    const scrollY = window.scrollY;
     const oldLen = textarea.value.length;
     textarea.value = await decryptIfNeeded(text);
     const newLen = textarea.value.length;
     const delta = newLen - oldLen;
+    autoResizeTextarea();
     textarea.selectionStart = textarea.selectionEnd = Math.max(0, Math.min(pos + delta, newLen));
-    textarea.scrollTop = scrollTop;
+    window.scrollTo(0, scrollY);
     currentVersion = version;
     updateGutter();
     updateLineInfo();
@@ -446,6 +454,7 @@
     isTyping = true;
     clearTimeout(typingTimer);
     typingTimer = setTimeout(function() { isTyping = false; }, 1000);
+    autoResizeTextarea();
     updateGutter();
     updateLineInfo();
     clearTimeout(sendTimer);
@@ -453,6 +462,7 @@
   }
 
   textarea.addEventListener('input', onInput);
+  autoResizeTextarea();
   updateGutter();
 })();
 </script>
