@@ -21,6 +21,8 @@ pads = {}
 MAX_TEXT_SIZE = 2_000_000
 MAX_PADS_IN_MEMORY = 200
 AUTH_TIMEOUT = 10
+PAD_EXPIRY_SECONDS = 24 * 60 * 60
+EXPIRY_SCAN_INTERVAL = 15 * 60
 # Rate limiting
 auth_failures_by_ip = defaultdict(list)  # ip -> [timestamps]
 auth_failures_by_pad = defaultdict(list)  # pad_name -> [timestamps]
@@ -71,6 +73,14 @@ def save_pad_meta(name, meta):
     except Exception as e:
         print(f"Error saving meta {name}: {e}")
         tmp_path.unlink(missing_ok=True)
+
+
+def delete_pad_files(name):
+    for suffix in (".meta.json", ".txt"):
+        try:
+            (DATA_DIR / f"{name}{suffix}").unlink(missing_ok=True)
+        except Exception as e:
+            print(f"Error deleting {name}{suffix}: {e}")
 
 
 def load_pad_content(name):
@@ -169,6 +179,7 @@ def normalize_meta(meta):
     auth_salt = meta.get("auth_salt", meta.get("salt", ""))
     auth_hash = meta.get("auth_hash", meta.get("pw_hash", ""))
     enc_salt = meta.get("enc_salt", meta.get("salt", ""))
+    last_access = meta.get("last_access", time.time())
 
     if encrypted:
         if not (
@@ -187,7 +198,55 @@ def normalize_meta(meta):
         "auth_hash": auth_hash,
         "enc_salt": enc_salt,
         "encrypted": encrypted,
+        "last_access": float(last_access),
     }
+
+
+def is_pad_expired(meta, now=None):
+    if now is None:
+        now = time.time()
+    return now - float(meta.get("last_access", now)) >= PAD_EXPIRY_SECONDS
+
+
+def touch_pad(name, pad, now=None):
+    if now is None:
+        now = time.time()
+    pad["last_access"] = now
+    save_pad_meta(
+        name,
+        {
+            "auth_salt": pad["auth_salt"],
+            "auth_hash": pad["auth_hash"],
+            "enc_salt": pad["enc_salt"],
+            "encrypted": pad["encrypted"],
+            "last_access": now,
+        },
+    )
+
+
+def purge_expired_pads(now=None):
+    if now is None:
+        now = time.time()
+
+    for meta_path in DATA_DIR.glob("*.meta.json"):
+        name = meta_path.name[:-10]
+        meta = load_pad_meta(name)
+        if meta is None:
+            continue
+        meta = normalize_meta(meta)
+        if meta is None:
+            delete_pad_files(name)
+            pads.pop(name, None)
+            continue
+        if is_pad_expired(meta, now=now):
+            delete_pad_files(name)
+            pads.pop(name, None)
+
+
+async def expiry_cleanup_loop():
+    while True:
+        await asyncio.sleep(EXPIRY_SCAN_INTERVAL)
+        purge_expired_pads()
 
 
 async def broadcast(pad, message, exclude=None):
@@ -273,17 +332,22 @@ async def handler(websocket):
                 if meta is None:
                     await websocket.close(1011, "Invalid pad metadata")
                     return
+                if is_pad_expired(meta):
+                    delete_pad_files(pad_name)
+                    meta = None
 
-                pads[pad_name] = {
-                    "text": load_pad_content(pad_name),
-                    "clients": set(),
-                    "last_modified": time.time(),
-                    "version": 0,
-                    "auth_salt": meta["auth_salt"],
-                    "auth_hash": meta["auth_hash"],
-                    "enc_salt": meta["enc_salt"],
-                    "encrypted": meta["encrypted"],
-                }
+                if meta is not None:
+                    pads[pad_name] = {
+                        "text": load_pad_content(pad_name),
+                        "clients": set(),
+                        "last_modified": time.time(),
+                        "version": 0,
+                        "auth_salt": meta["auth_salt"],
+                        "auth_hash": meta["auth_hash"],
+                        "enc_salt": meta["enc_salt"],
+                        "encrypted": meta["encrypted"],
+                        "last_access": meta["last_access"],
+                    }
 
         pad_exists = pad_name in pads
         pad = pads.get(pad_name)
@@ -377,8 +441,10 @@ async def handler(websocket):
                     "auth_hash": meta["auth_hash"],
                     "enc_salt": meta["enc_salt"],
                     "encrypted": encrypted,
+                    "last_access": time.time(),
                 }
                 pad = pads[pad_name]
+                touch_pad(pad_name, pad)
 
                 await websocket.send(
                     json.dumps(
@@ -392,6 +458,7 @@ async def handler(websocket):
 
         # --- Normal operation ---
         pad = pads[pad_name]
+        touch_pad(pad_name, pad)
         pad["clients"].add(websocket)
         message_count_window = 0
         window_start = time.time()
@@ -437,6 +504,7 @@ async def handler(websocket):
                 pad["text"] = text
                 pad["version"] += 1
                 pad["last_modified"] = time.time()
+                touch_pad(pad_name, pad)
                 save_pad_content(pad_name, text)
 
                 msg = json.dumps(
@@ -465,6 +533,8 @@ async def main():
     if origins_env:
         ALLOWED_ORIGINS = set(origins_env.split(","))
 
+    purge_expired_pads()
+
     async with websockets.serve(
         handler,
         host,
@@ -473,6 +543,7 @@ async def main():
         ping_interval=30,
         ping_timeout=10,
     ):
+        asyncio.create_task(expiry_cleanup_loop())
         print(f"Pad server running on ws://{host}:{port}")
         await asyncio.Future()
 

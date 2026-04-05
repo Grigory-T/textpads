@@ -5,16 +5,19 @@
 }
 
 :root {
-  --bg: #fafafa;
-  --fg: #222;
-  --muted: #888;
-  --border: #ddd;
-  --gutter-bg: #f0f0f0;
-  --toolbar-bg: #fff;
-  --btn-bg: #333;
-  --btn-fg: #fff;
-  --btn-sec-bg: #e8e8e8;
-  --btn-sec-fg: #333;
+  --bg: #0f1115;
+  --panel: #171b22;
+  --fg: #e6ecf5;
+  --muted: #93a0b4;
+  --border: #2a3240;
+  --gutter-bg: #141922;
+  --toolbar-bg: #12161d;
+  --btn-bg: #d9e2f2;
+  --btn-fg: #10141c;
+  --btn-sec-bg: #232a36;
+  --btn-sec-fg: #dce4f2;
+  --input-bg: #141923;
+  --accent: #7cc4ff;
   --mono: "SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
@@ -27,6 +30,10 @@ html, body {
   font-size: 16px;
   line-height: 1.5;
   -webkit-text-size-adjust: 100%;
+}
+
+::selection {
+  background: rgba(124, 196, 255, 0.28);
 }
 
 /* --- Landing page --- */
@@ -79,7 +86,8 @@ html, body {
   border-radius: 8px;
   font-size: 16px;
   font-family: var(--sans);
-  background: #fff;
+  background: var(--input-bg);
+  color: var(--fg);
   outline: none;
 }
 
@@ -88,7 +96,7 @@ html, body {
 }
 
 .landing-form input:focus {
-  border-color: #999;
+  border-color: var(--accent);
 }
 
 .landing-form .btn {
@@ -97,7 +105,7 @@ html, body {
 }
 
 .form-hint {
-  color: #c33;
+  color: #ff8d8d;
   font-size: 14px;
   min-height: 18px;
   margin-top: 4px;
@@ -128,6 +136,7 @@ html, body {
 .btn-secondary {
   background: var(--btn-sec-bg);
   color: var(--btn-sec-fg);
+  border: 1px solid var(--border);
 }
 
 .landing-info {
@@ -184,17 +193,18 @@ html, body {
   border-radius: 8px;
   font-size: 16px;
   font-family: var(--sans);
-  background: #fff;
+  background: var(--input-bg);
+  color: var(--fg);
   outline: none;
   min-width: 0;
 }
 
 .auth-dialog input:focus {
-  border-color: #999;
+  border-color: var(--accent);
 }
 
 .auth-error {
-  color: #c33;
+  color: #ff8d8d;
   font-size: 14px;
   margin-top: 12px;
   min-height: 20px;
@@ -268,9 +278,9 @@ html, body {
   flex-shrink: 0;
 }
 
-.status-ok { color: #2a7d2a; }
-.status-warn { color: #b58900; }
-.status-err { color: #c33; }
+.status-ok { color: #77d277; }
+.status-warn { color: #ffd166; }
+.status-err { color: #ff8d8d; }
 
 .toolbar-clients {
   color: var(--muted);
@@ -302,7 +312,7 @@ html, body {
   line-height: 1.5;
   text-align: right;
   padding-right: 8px;
-  color: #aaa;
+  color: #738099;
   overflow: hidden;
 }
 
@@ -315,7 +325,7 @@ html, body {
   font-family: var(--mono);
   font-size: 15px;
   line-height: 1.5;
-  background: #fff;
+  background: var(--panel);
   color: var(--fg);
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -326,7 +336,7 @@ html, body {
 }
 
 #text::placeholder {
-  color: #ccc;
+  color: #70809a;
 }
 
 /* --- Tablet (portrait) --- */
