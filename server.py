@@ -526,6 +526,10 @@ async def handler(websocket):
                 touch_pad(pad_name, pad)
                 save_pad_content(pad_name, text)
 
+                await websocket.send(
+                    json.dumps({"type": "ack", "version": pad["version"]})
+                )
+
                 msg = json.dumps(
                     {"type": "update", "text": text, "version": pad["version"]}
                 )

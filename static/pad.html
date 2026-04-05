@@ -392,6 +392,11 @@
         return;
       }
 
+      if (data.type === 'ack') {
+        currentVersion = data.version;
+        return;
+      }
+
       if (data.type === 'conflict') {
         isTyping = false;
         clearTimeout(typingTimer);
