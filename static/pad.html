@@ -57,6 +57,16 @@
     return bytes;
   }
 
+  function bytesToHex(bytes) {
+    return Array.from(bytes, function(b) {
+      return b.toString(16).padStart(2, '0');
+    }).join('');
+  }
+
+  function randomHex(lengthBytes) {
+    return bytesToHex(crypto.getRandomValues(new Uint8Array(lengthBytes)));
+  }
+
   async function deriveKey(password, saltHex) {
     const keyMaterial = await subtle.importKey(
       'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
@@ -68,6 +78,18 @@
       false,
       ['encrypt', 'decrypt']
     );
+  }
+
+  async function deriveAuthHash(password, saltHex) {
+    const keyMaterial = await subtle.importKey(
+      'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+    );
+    const bits = await subtle.deriveBits(
+      { name: 'PBKDF2', salt: hexToBytes(saltHex), iterations: 600000, hash: 'SHA-256' },
+      keyMaterial,
+      256
+    );
+    return bytesToHex(new Uint8Array(bits));
   }
 
   async function encrypt(key, plaintext) {
@@ -132,7 +154,6 @@
     sessionStorage.removeItem('pad_password');
     sessionStorage.removeItem('pad_password_for');
     sessionStorage.removeItem('pad_create');
-    showEditor();
     connect();
   } else {
     // Direct URL access — try empty password first (works for open pads)
@@ -280,7 +301,7 @@
     ws = new WebSocket(proto + '//' + location.host + '/ws/' + padName);
 
     ws.onopen = function() {
-      var msg = { type: 'auth', password: password };
+      var msg = { type: 'start' };
       if (wantsCreate) msg.create = true;
       ws.send(JSON.stringify(msg));
     };
@@ -300,12 +321,37 @@
         return;
       }
 
+      if (data.type === 'auth_challenge') {
+        if (data.exists && data.encrypted && !hasPassword) {
+          ws.close();
+          showAuthDialog('');
+          return;
+        }
+
+        var authMsg = { type: 'auth' };
+
+        if (!data.exists) {
+          var createEncrypted = password.length > 0;
+          authMsg.encrypted = createEncrypted;
+          if (createEncrypted) {
+            authMsg.auth_salt = randomHex(16);
+            authMsg.enc_salt = randomHex(16);
+            authMsg.auth_hash = await deriveAuthHash(password, authMsg.auth_salt);
+          }
+        } else if (data.encrypted) {
+          authMsg.auth_hash = await deriveAuthHash(password, data.auth_salt);
+        }
+
+        ws.send(JSON.stringify(authMsg));
+        return;
+      }
+
       if (data.type === 'auth_ok') {
         authenticated = true;
         isEncrypted = data.encrypted;
         if (isEncrypted) {
           // Store promise so init/update handlers can await it
-          keyReady = deriveKey(password, data.salt).then(function(k) { aesKey = k; });
+          keyReady = deriveKey(password, data.enc_salt).then(function(k) { aesKey = k; });
           await keyReady;
           lockIcon.textContent = '\u{1F512}';
         } else {

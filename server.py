@@ -2,7 +2,6 @@
 """Minimal collaborative text pad - WebSocket server with password protection."""
 
 import asyncio
-import hashlib
 import hmac
 import json
 import os
@@ -16,14 +15,12 @@ import websockets
 DATA_DIR = Path(os.environ.get("PAD_DATA_DIR", "/opt/pad/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-# In-memory state: pad_name -> {text, clients, last_modified, version, salt, pw_hash, encrypted}
+# In-memory state: pad_name -> auth+content metadata and connected clients.
 pads = {}
 
 MAX_TEXT_SIZE = 2_000_000
 MAX_PADS_IN_MEMORY = 200
 AUTH_TIMEOUT = 10
-PBKDF2_ITERATIONS = 600_000
-
 # Rate limiting
 auth_failures_by_ip = defaultdict(list)  # ip -> [timestamps]
 auth_failures_by_pad = defaultdict(list)  # pad_name -> [timestamps]
@@ -51,19 +48,6 @@ def is_valid_pad_name(name):
         and not name.startswith("-")
         and not name.endswith("-")
     )
-
-
-def hash_password(password, salt_hex):
-    salt = bytes.fromhex(salt_hex)
-    return hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS
-    ).hex()
-
-
-def verify_password(password, salt_hex, stored_hash):
-    """Timing-safe password verification."""
-    provided_hash = hash_password(password, salt_hex)
-    return hmac.compare_digest(provided_hash, stored_hash)
 
 
 def load_pad_meta(name):
@@ -172,6 +156,40 @@ def check_origin(websocket):
     return True
 
 
+def is_valid_hex(value, length_bytes):
+    return (
+        isinstance(value, str)
+        and len(value) == length_bytes * 2
+        and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+def normalize_meta(meta):
+    encrypted = bool(meta.get("encrypted", False))
+    auth_salt = meta.get("auth_salt", meta.get("salt", ""))
+    auth_hash = meta.get("auth_hash", meta.get("pw_hash", ""))
+    enc_salt = meta.get("enc_salt", meta.get("salt", ""))
+
+    if encrypted:
+        if not (
+            is_valid_hex(auth_salt, 16)
+            and is_valid_hex(enc_salt, 16)
+            and is_valid_hex(auth_hash, 32)
+        ):
+            return None
+    else:
+        auth_salt = ""
+        auth_hash = ""
+        enc_salt = ""
+
+    return {
+        "auth_salt": auth_salt,
+        "auth_hash": auth_hash,
+        "enc_salt": enc_salt,
+        "encrypted": encrypted,
+    }
+
+
 async def broadcast(pad, message, exclude=None):
     targets = [c for c in pad["clients"] if c != exclude]
     if targets:
@@ -232,39 +250,122 @@ async def handler(websocket):
         # --- Authentication phase ---
         try:
             raw = await asyncio.wait_for(websocket.recv(), timeout=AUTH_TIMEOUT)
-            auth_msg = json.loads(raw)
+            start_msg = json.loads(raw)
         except (asyncio.TimeoutError, json.JSONDecodeError):
             record_auth_failure(client_ip, pad_name)
             await websocket.close(1008, "Auth timeout")
             return
 
-        if auth_msg.get("type") != "auth":
+        if start_msg.get("type") != "start":
             record_auth_failure(client_ip, pad_name)
-            await websocket.close(1008, "Auth required")
+            await websocket.close(1008, "Start required")
             return
 
-        password = auth_msg.get("password", "")
-        wants_create = auth_msg.get("create", False)
+        wants_create = bool(start_msg.get("create", False))
 
         # Load or initialize pad
         if pad_name not in pads:
             cleanup_memory()
             meta = load_pad_meta(pad_name)
 
-            if meta is None:
-                if not wants_create:
-                    record_auth_failure(client_ip, pad_name)
-                    await asyncio.sleep(1)
-                    await websocket.send(json.dumps({"type": "auth_fail"}))
-                    await websocket.close(1008, "Auth failed")
+            if meta is not None:
+                meta = normalize_meta(meta)
+                if meta is None:
+                    await websocket.close(1011, "Invalid pad metadata")
                     return
 
-                # New pad
-                salt_hex = secrets.token_hex(16)
-                encrypted = len(password) > 0
-                pw_hash = hash_password(password, salt_hex) if encrypted else ""
+                pads[pad_name] = {
+                    "text": load_pad_content(pad_name),
+                    "clients": set(),
+                    "last_modified": time.time(),
+                    "version": 0,
+                    "auth_salt": meta["auth_salt"],
+                    "auth_hash": meta["auth_hash"],
+                    "enc_salt": meta["enc_salt"],
+                    "encrypted": meta["encrypted"],
+                }
 
-                meta = {"salt": salt_hex, "pw_hash": pw_hash, "encrypted": encrypted}
+        pad_exists = pad_name in pads
+        pad = pads.get(pad_name)
+
+        if not pad_exists and not wants_create:
+            record_auth_failure(client_ip, pad_name)
+            await asyncio.sleep(1)
+            await websocket.send(json.dumps({"type": "auth_fail"}))
+            await websocket.close(1008, "Auth failed")
+            return
+
+        if pad_exists and not pad["encrypted"]:
+            await websocket.send(
+                json.dumps({"type": "auth_ok", "encrypted": False, "enc_salt": ""})
+            )
+        else:
+            challenge = {
+                "type": "auth_challenge",
+                "exists": pad_exists,
+                "encrypted": pad["encrypted"] if pad_exists else False,
+            }
+            if pad_exists and pad["encrypted"]:
+                challenge["auth_salt"] = pad["auth_salt"]
+                challenge["enc_salt"] = pad["enc_salt"]
+            await websocket.send(json.dumps(challenge))
+
+            try:
+                raw = await asyncio.wait_for(websocket.recv(), timeout=AUTH_TIMEOUT)
+                auth_msg = json.loads(raw)
+            except (asyncio.TimeoutError, json.JSONDecodeError):
+                record_auth_failure(client_ip, pad_name)
+                await websocket.close(1008, "Auth timeout")
+                return
+
+            if auth_msg.get("type") != "auth":
+                record_auth_failure(client_ip, pad_name)
+                await websocket.close(1008, "Auth required")
+                return
+
+            if pad_exists:
+                if pad["encrypted"]:
+                    provided_hash = auth_msg.get("auth_hash", "")
+                    if not (
+                        is_valid_hex(provided_hash, 32)
+                        and hmac.compare_digest(provided_hash, pad["auth_hash"])
+                    ):
+                        record_auth_failure(client_ip, pad_name)
+                        await asyncio.sleep(1)
+                        await websocket.send(json.dumps({"type": "auth_fail"}))
+                        await websocket.close(1008, "Auth failed")
+                        return
+
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "auth_ok",
+                            "encrypted": pad["encrypted"],
+                            "enc_salt": pad["enc_salt"],
+                        }
+                    )
+                )
+            else:
+                encrypted = bool(auth_msg.get("encrypted", False))
+                auth_salt = auth_msg.get("auth_salt", "")
+                auth_hash = auth_msg.get("auth_hash", "")
+                enc_salt = auth_msg.get("enc_salt", "")
+
+                if encrypted and not (
+                    is_valid_hex(auth_salt, 16)
+                    and is_valid_hex(enc_salt, 16)
+                    and is_valid_hex(auth_hash, 32)
+                ):
+                    record_auth_failure(client_ip, pad_name)
+                    await websocket.close(1008, "Invalid auth setup")
+                    return
+
+                meta = {
+                    "auth_salt": auth_salt if encrypted else "",
+                    "auth_hash": auth_hash if encrypted else "",
+                    "enc_salt": enc_salt if encrypted else "",
+                    "encrypted": encrypted,
+                }
                 save_pad_meta(pad_name, meta)
 
                 pads[pad_name] = {
@@ -272,44 +373,25 @@ async def handler(websocket):
                     "clients": set(),
                     "last_modified": time.time(),
                     "version": 0,
-                    "salt": salt_hex,
-                    "pw_hash": pw_hash,
+                    "auth_salt": meta["auth_salt"],
+                    "auth_hash": meta["auth_hash"],
+                    "enc_salt": meta["enc_salt"],
                     "encrypted": encrypted,
                 }
-            else:
-                pads[pad_name] = {
-                    "text": load_pad_content(pad_name),
-                    "clients": set(),
-                    "last_modified": time.time(),
-                    "version": 0,
-                    "salt": meta["salt"],
-                    "pw_hash": meta["pw_hash"],
-                    "encrypted": meta["encrypted"],
-                }
+                pad = pads[pad_name]
 
-        pad = pads[pad_name]
-
-        # Verify password (timing-safe)
-        if pad["encrypted"]:
-            if not verify_password(password, pad["salt"], pad["pw_hash"]):
-                record_auth_failure(client_ip, pad_name)
-                await asyncio.sleep(1)
-                await websocket.send(json.dumps({"type": "auth_fail"}))
-                await websocket.close(1008, "Auth failed")
-                return
-
-        # Auth successful
-        await websocket.send(
-            json.dumps(
-                {
-                    "type": "auth_ok",
-                    "salt": pad["salt"],
-                    "encrypted": pad["encrypted"],
-                }
-            )
-        )
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "auth_ok",
+                            "encrypted": encrypted,
+                            "enc_salt": pad["enc_salt"],
+                        }
+                    )
+                )
 
         # --- Normal operation ---
+        pad = pads[pad_name]
         pad["clients"].add(websocket)
         message_count_window = 0
         window_start = time.time()
