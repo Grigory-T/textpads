@@ -295,6 +295,21 @@
     statusEl.className = 'toolbar-status status-' + type;
   }
 
+  async function applyServerText(text, version, force) {
+    if (isTyping && !force) return;
+    const pos = textarea.selectionStart;
+    const scrollTop = textarea.scrollTop;
+    const oldLen = textarea.value.length;
+    textarea.value = await decryptIfNeeded(text);
+    const newLen = textarea.value.length;
+    const delta = newLen - oldLen;
+    textarea.selectionStart = textarea.selectionEnd = Math.max(0, Math.min(pos + delta, newLen));
+    textarea.scrollTop = scrollTop;
+    currentVersion = version;
+    updateGutter();
+    updateLineInfo();
+  }
+
   function connect() {
     if (ws) { try { ws.close(); } catch(e) {} }
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -367,31 +382,24 @@
       }
 
       if (data.type === 'init') {
-        if (!isTyping) {
-          const scrollTop = textarea.scrollTop;
-          textarea.value = await decryptIfNeeded(data.text);
-          textarea.scrollTop = scrollTop;
-        }
-        currentVersion = data.version;
+        await applyServerText(data.text, data.version, false);
         clientsEl.textContent = data.clients + (data.clients === 1 ? ' user' : ' users');
-        updateGutter();
-        updateLineInfo();
+        return;
       }
 
       if (data.type === 'update') {
-        if (!isTyping) {
-          const pos = textarea.selectionStart;
-          const scrollTop = textarea.scrollTop;
-          const oldLen = textarea.value.length;
-          textarea.value = await decryptIfNeeded(data.text);
-          const newLen = textarea.value.length;
-          const delta = newLen - oldLen;
-          textarea.selectionStart = textarea.selectionEnd = Math.max(0, Math.min(pos + delta, newLen));
-          textarea.scrollTop = scrollTop;
-          updateGutter();
-          updateLineInfo();
-        }
-        currentVersion = data.version;
+        await applyServerText(data.text, data.version, false);
+        return;
+      }
+
+      if (data.type === 'conflict') {
+        isTyping = false;
+        clearTimeout(typingTimer);
+        clearTimeout(sendTimer);
+        await applyServerText(data.text, data.version, true);
+        setStatus('conflict: remote version kept', 'warn');
+        setTimeout(function() { if (connected) setStatus('connected', 'ok'); }, 3000);
+        return;
       }
 
       if (data.type === 'clients') {
@@ -421,7 +429,11 @@
 
   async function doSend() {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'update', text: await encryptIfNeeded(textarea.value) }));
+      ws.send(JSON.stringify({
+        type: 'update',
+        text: await encryptIfNeeded(textarea.value),
+        version: currentVersion
+      }));
     }
   }
 

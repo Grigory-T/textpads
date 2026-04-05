@@ -492,11 +492,30 @@ async def handler(websocket):
 
             if data.get("type") == "update":
                 text = data.get("text", "")
+                base_version = data.get("version")
 
                 if len(text) > MAX_TEXT_SIZE:
                     await websocket.send(
                         json.dumps(
                             {"type": "error", "message": "Text too large"}
+                        )
+                    )
+                    continue
+
+                if not isinstance(base_version, int):
+                    await websocket.send(
+                        json.dumps({"type": "error", "message": "Missing version"})
+                    )
+                    continue
+
+                if base_version != pad["version"]:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "conflict",
+                                "text": pad["text"],
+                                "version": pad["version"],
+                            }
                         )
                     )
                     continue
