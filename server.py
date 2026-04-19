@@ -21,8 +21,12 @@ pads = {}
 MAX_TEXT_SIZE = 2_000_000
 MAX_PADS_IN_MEMORY = 200
 AUTH_TIMEOUT = 10
-PAD_EXPIRY_SECONDS = 24 * 60 * 60
-EXPIRY_SCAN_INTERVAL = 15 * 60
+DEFAULT_PAD_EXPIRY_DAYS = 7
+DEFAULT_PAD_EXPIRY_SECONDS = DEFAULT_PAD_EXPIRY_DAYS * 24 * 60 * 60
+PAD_EXPIRY_SECONDS = DEFAULT_PAD_EXPIRY_SECONDS
+
+DEFAULT_EXPIRY_SCAN_SECONDS = 15 * 60
+EXPIRY_SCAN_INTERVAL = DEFAULT_EXPIRY_SCAN_SECONDS
 # Rate limiting
 auth_failures_by_ip = defaultdict(list)  # ip -> [timestamps]
 auth_failures_by_pad = defaultdict(list)  # pad_name -> [timestamps]
@@ -40,6 +44,36 @@ total_connections = 0
 MAX_MESSAGES_PER_SECOND = 5
 
 ALLOWED_ORIGINS = None  # set from env
+
+
+def _get_int_env(name, default):
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _get_days_or_seconds(days_env, seconds_env, default_seconds):
+    seconds = _get_int_env(seconds_env, 0)
+    if seconds > 0:
+        return seconds
+    days = _get_int_env(days_env, 0)
+    if days > 0:
+        return days * 24 * 60 * 60
+    return default_seconds
+
+
+def _get_minutes_or_seconds(minutes_env, seconds_env, default_seconds):
+    seconds = _get_int_env(seconds_env, 0)
+    if seconds > 0:
+        return seconds
+    minutes = _get_int_env(minutes_env, 0)
+    if minutes > 0:
+        return minutes * 60
+    return default_seconds
 
 
 def is_valid_pad_name(name):
@@ -550,11 +584,22 @@ async def handler(websocket):
 
 async def main():
     global ALLOWED_ORIGINS
+    global PAD_EXPIRY_SECONDS
+    global EXPIRY_SCAN_INTERVAL
     host = os.environ.get("PAD_HOST", "127.0.0.1")
     port = int(os.environ.get("PAD_PORT", "8765"))
     origins_env = os.environ.get("PAD_ALLOWED_ORIGINS", "")
     if origins_env:
         ALLOWED_ORIGINS = set(origins_env.split(","))
+
+    PAD_EXPIRY_SECONDS = _get_days_or_seconds(
+        "PAD_EXPIRY_DAYS", "PAD_EXPIRY_SECONDS", DEFAULT_PAD_EXPIRY_SECONDS
+    )
+    EXPIRY_SCAN_INTERVAL = _get_minutes_or_seconds(
+        "PAD_EXPIRY_SCAN_MINUTES",
+        "PAD_EXPIRY_SCAN_SECONDS",
+        DEFAULT_EXPIRY_SCAN_SECONDS,
+    )
 
     purge_expired_pads()
 

@@ -1,8 +1,9 @@
 [Unit]
-Description=Weekly Textpads full cleanup at 03:00 GMT+3
+Description=Textpads full cleanup every 30 days
 
 [Timer]
-OnCalendar=Sun *-*-* 00:00:00 UTC
+OnBootSec=30d
+OnUnitActiveSec=30d
 Persistent=true
 Unit=textpads-weekly-cleanup.service
 

@@ -28,8 +28,8 @@ Usage rules:
 - Protected pads still use a server-side auth hash to gate access.
 - The editor uses logical line numbers only.
 - Soft wrap is disabled for reliability; long lines scroll horizontally.
-- Pads are deleted automatically after 24 hours without successful access.
-- All pads are deleted weekly at `03:00` in `GMT+3`.
+- Pads are deleted automatically after 7 days without successful access (configurable).
+- All pads are deleted every 30 days by a systemd timer (configurable).
 
 ## Technical Overview
 
@@ -80,9 +80,25 @@ Implications:
 
 - Recent pads are kept in memory while active.
 - Pad files are stored under the configured data directory.
-- Pads inactive for more than 24 hours are purged by the app.
+- Pads inactive for more than the configured expiry are purged by the app.
 - A separate cleanup script can remove all pads immediately.
-- A weekly systemd timer performs a full wipe of all pad files.
+- A systemd timer performs a full wipe of all pad files on a schedule.
+
+## Retention Settings
+
+These settings are intended to be easy to find and change:
+
+- **Auto-expire (server-side):** edit `pad.service` and set `PAD_EXPIRY_DAYS` (or `PAD_EXPIRY_SECONDS`).
+- **Expiry scan interval:** edit `pad.service` and set `PAD_EXPIRY_SCAN_MINUTES` (or `PAD_EXPIRY_SCAN_SECONDS`).
+- **Full wipe schedule:** edit `textpads-weekly-cleanup.timer` (defaults to every 30 days).
+
+After changing systemd unit files:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart pad.service
+sudo systemctl restart textpads-weekly-cleanup.timer
+```
 
 ## Stack
 
