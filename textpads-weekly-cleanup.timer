@@ -1,0 +1,11 @@
+[Unit]
+Description=Textpads full cleanup every 30 days
+
+[Timer]
+OnBootSec=30d
+OnUnitActiveSec=30d
+Persistent=true
+Unit=textpads-weekly-cleanup.service
+
+[Install]
+WantedBy=timers.target

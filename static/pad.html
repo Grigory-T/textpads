@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pad</title>
 <meta name="robots" content="noindex, nofollow">
-<link rel="stylesheet" href="/static/style.css?v=3">
+<link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body class="pad-body">
 
@@ -34,8 +34,8 @@
     <span class="toolbar-clients" id="clients" title="Connected users"></span>
   </div>
   <div class="editor">
-    <div class="gutter" id="gutter"></div>
-    <textarea id="text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+    <div class="gutter" id="gutter" aria-hidden="true"></div>
+    <textarea id="text" wrap="off" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
   </div>
 </div>
 
@@ -57,6 +57,16 @@
     return bytes;
   }
 
+  function bytesToHex(bytes) {
+    return Array.from(bytes, function(b) {
+      return b.toString(16).padStart(2, '0');
+    }).join('');
+  }
+
+  function randomHex(lengthBytes) {
+    return bytesToHex(crypto.getRandomValues(new Uint8Array(lengthBytes)));
+  }
+
   async function deriveKey(password, saltHex) {
     const keyMaterial = await subtle.importKey(
       'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
@@ -68,6 +78,18 @@
       false,
       ['encrypt', 'decrypt']
     );
+  }
+
+  async function deriveAuthHash(password, saltHex) {
+    const keyMaterial = await subtle.importKey(
+      'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+    );
+    const bits = await subtle.deriveBits(
+      { name: 'PBKDF2', salt: hexToBytes(saltHex), iterations: 600000, hash: 'SHA-256' },
+      keyMaterial,
+      256
+    );
+    return bytesToHex(new Uint8Array(bits));
   }
 
   async function encrypt(key, plaintext) {
@@ -107,8 +129,8 @@
   let wantsCreate = false;  // true = create new pad (only from landing page)
   let keyReady = null;  // Promise that resolves when AES key is derived
 
-  const textarea = document.getElementById('text');
   const gutter = document.getElementById('gutter');
+  const textarea = document.getElementById('text');
   const statusEl = document.getElementById('status');
   const clientsEl = document.getElementById('clients');
   const lineInfoEl = document.getElementById('line-info');
@@ -132,7 +154,6 @@
     sessionStorage.removeItem('pad_password');
     sessionStorage.removeItem('pad_password_for');
     sessionStorage.removeItem('pad_create');
-    showEditor();
     connect();
   } else {
     // Direct URL access — try empty password first (works for open pads)
@@ -154,6 +175,8 @@
   function showEditor() {
     authOverlay.style.display = 'none';
     editorWrap.style.display = '';
+    autoResizeTextarea();
+    updateGutter();
   }
 
   function showAuthDialog(errorMsg) {
@@ -164,61 +187,27 @@
     document.getElementById('auth-password').focus();
   }
 
-  // --- Line numbers (mirror technique for wrapped lines) ---
-  // Mirror must be on document.body — NOT inside .editor (overflow:hidden clips it)
-  var mirror = document.createElement('div');
-  mirror.setAttribute('aria-hidden', 'true');
-  document.body.appendChild(mirror);
-  let gutterUpdatePending = false;
-
-  function updateGutter() {
-    if (gutterUpdatePending) return;
-    gutterUpdatePending = true;
-    requestAnimationFrame(function() {
-      gutterUpdatePending = false;
-      doUpdateGutter();
-    });
+  function autoResizeTextarea() {
+    textarea.style.height = 'auto';
+    textarea.style.height = textarea.scrollHeight + 'px';
   }
 
-  function doUpdateGutter() {
-    var cs = window.getComputedStyle(textarea);
-    var contentWidth = textarea.clientWidth
-      - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    if (contentWidth <= 0) {
-      // Editor not visible yet, retry next frame
-      gutterUpdatePending = true;
-      requestAnimationFrame(function() { gutterUpdatePending = false; doUpdateGutter(); });
-      return;
-    }
-    mirror.style.cssText =
-      'position:absolute;top:0;left:-9999px;visibility:hidden;' +
-      'white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;' +
-      'font:' + cs.font + ';letter-spacing:' + cs.letterSpacing +
-      ';line-height:' + cs.lineHeight +
-      ';tab-size:' + cs.tabSize + ';padding:0;border:0;margin:0;' +
-      'width:' + contentWidth + 'px;';
-
+  function updateGutter() {
     var lines = textarea.value.split('\n');
-    mirror.innerHTML = '';
-    for (var i = 0; i < lines.length; i++) {
-      var div = document.createElement('div');
-      div.textContent = lines[i] || '\u00a0';
-      mirror.appendChild(div);
-    }
     var html = '';
-    for (var i = 0; i < mirror.children.length; i++) {
-      var h = mirror.children[i].offsetHeight;
-      html += '<div class="gutter-line" style="height:' + h + 'px">' + (i + 1) + '</div>';
+    for (var i = 0; i < lines.length; i++) {
+      html += '<div class="gutter-line">' + (i + 1) + '</div>';
     }
     gutter.innerHTML = html;
   }
 
-  textarea.addEventListener('scroll', function() { gutter.scrollTop = textarea.scrollTop; });
-
   var resizeTimer;
   window.addEventListener('resize', function() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(doUpdateGutter, 100);
+    resizeTimer = setTimeout(function() {
+      autoResizeTextarea();
+      updateGutter();
+    }, 100);
   });
 
   // --- Cursor position ---
@@ -274,13 +263,29 @@
     statusEl.className = 'toolbar-status status-' + type;
   }
 
+  async function applyServerText(text, version, force) {
+    if (isTyping && !force) return;
+    const pos = textarea.selectionStart;
+    const scrollY = window.scrollY;
+    const oldLen = textarea.value.length;
+    textarea.value = await decryptIfNeeded(text);
+    const newLen = textarea.value.length;
+    const delta = newLen - oldLen;
+    autoResizeTextarea();
+    textarea.selectionStart = textarea.selectionEnd = Math.max(0, Math.min(pos + delta, newLen));
+    window.scrollTo(0, scrollY);
+    currentVersion = version;
+    updateGutter();
+    updateLineInfo();
+  }
+
   function connect() {
     if (ws) { try { ws.close(); } catch(e) {} }
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(proto + '//' + location.host + '/ws/' + padName);
 
     ws.onopen = function() {
-      var msg = { type: 'auth', password: password };
+      var msg = { type: 'start' };
       if (wantsCreate) msg.create = true;
       ws.send(JSON.stringify(msg));
     };
@@ -300,12 +305,37 @@
         return;
       }
 
+      if (data.type === 'auth_challenge') {
+        if (data.exists && data.encrypted && !hasPassword) {
+          ws.close();
+          showAuthDialog('');
+          return;
+        }
+
+        var authMsg = { type: 'auth' };
+
+        if (!data.exists) {
+          var createEncrypted = password.length > 0;
+          authMsg.encrypted = createEncrypted;
+          if (createEncrypted) {
+            authMsg.auth_salt = randomHex(16);
+            authMsg.enc_salt = randomHex(16);
+            authMsg.auth_hash = await deriveAuthHash(password, authMsg.auth_salt);
+          }
+        } else if (data.encrypted) {
+          authMsg.auth_hash = await deriveAuthHash(password, data.auth_salt);
+        }
+
+        ws.send(JSON.stringify(authMsg));
+        return;
+      }
+
       if (data.type === 'auth_ok') {
         authenticated = true;
         isEncrypted = data.encrypted;
         if (isEncrypted) {
           // Store promise so init/update handlers can await it
-          keyReady = deriveKey(password, data.salt).then(function(k) { aesKey = k; });
+          keyReady = deriveKey(password, data.enc_salt).then(function(k) { aesKey = k; });
           await keyReady;
           lockIcon.textContent = '\u{1F512}';
         } else {
@@ -321,31 +351,29 @@
       }
 
       if (data.type === 'init') {
-        if (!isTyping) {
-          const scrollTop = textarea.scrollTop;
-          textarea.value = await decryptIfNeeded(data.text);
-          textarea.scrollTop = scrollTop;
-        }
-        currentVersion = data.version;
+        await applyServerText(data.text, data.version, false);
         clientsEl.textContent = data.clients + (data.clients === 1 ? ' user' : ' users');
-        updateGutter();
-        updateLineInfo();
+        return;
       }
 
       if (data.type === 'update') {
-        if (!isTyping) {
-          const pos = textarea.selectionStart;
-          const scrollTop = textarea.scrollTop;
-          const oldLen = textarea.value.length;
-          textarea.value = await decryptIfNeeded(data.text);
-          const newLen = textarea.value.length;
-          const delta = newLen - oldLen;
-          textarea.selectionStart = textarea.selectionEnd = Math.max(0, Math.min(pos + delta, newLen));
-          textarea.scrollTop = scrollTop;
-          updateGutter();
-          updateLineInfo();
-        }
+        await applyServerText(data.text, data.version, false);
+        return;
+      }
+
+      if (data.type === 'ack') {
         currentVersion = data.version;
+        return;
+      }
+
+      if (data.type === 'conflict') {
+        isTyping = false;
+        clearTimeout(typingTimer);
+        clearTimeout(sendTimer);
+        await applyServerText(data.text, data.version, true);
+        setStatus('conflict: remote version kept', 'warn');
+        setTimeout(function() { if (connected) setStatus('connected', 'ok'); }, 3000);
+        return;
       }
 
       if (data.type === 'clients') {
@@ -375,7 +403,11 @@
 
   async function doSend() {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'update', text: await encryptIfNeeded(textarea.value) }));
+      ws.send(JSON.stringify({
+        type: 'update',
+        text: await encryptIfNeeded(textarea.value),
+        version: currentVersion
+      }));
     }
   }
 
@@ -383,6 +415,7 @@
     isTyping = true;
     clearTimeout(typingTimer);
     typingTimer = setTimeout(function() { isTyping = false; }, 1000);
+    autoResizeTextarea();
     updateGutter();
     updateLineInfo();
     clearTimeout(sendTimer);
@@ -390,7 +423,9 @@
   }
 
   textarea.addEventListener('input', onInput);
+  autoResizeTextarea();
   updateGutter();
+  updateLineInfo();
 })();
 </script>
 </body>

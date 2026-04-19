@@ -9,6 +9,9 @@ sudo apt-get install -y nginx
 
 echo "=== Create directories ==="
 sudo mkdir -p /opt/pad/static /opt/pad/data
+if ! id -u pad >/dev/null 2>&1; then
+  sudo useradd --system --home /opt/pad --shell /usr/sbin/nologin pad
+fi
 sudo chown -R pad:pad /opt/pad
 chmod 700 /opt/pad/data
 
@@ -29,6 +32,10 @@ sudo nginx -t
 
 echo "=== Systemd service ==="
 sudo cp "$REPO_DIR/pad.service" /etc/systemd/system/pad.service
+sudo cp "$REPO_DIR/textpads-weekly-cleanup.service" /etc/systemd/system/textpads-weekly-cleanup.service
+sudo cp "$REPO_DIR/textpads-weekly-cleanup.timer" /etc/systemd/system/textpads-weekly-cleanup.timer
+sudo cp "$REPO_DIR/cleanup-pads.sh" /usr/local/bin/textpads-delete-all.sh
+sudo chmod 755 /usr/local/bin/textpads-delete-all.sh
 sudo systemctl daemon-reload
 
 echo "=== Firewall ==="
@@ -38,6 +45,7 @@ sudo ufw allow 443/tcp comment 'HTTPS' 2>/dev/null || true
 echo "=== Start services ==="
 sudo systemctl enable --now pad.service
 sudo systemctl restart pad.service
+sudo systemctl enable --now textpads-weekly-cleanup.timer
 sudo systemctl enable --now nginx
 sudo systemctl reload nginx
 
