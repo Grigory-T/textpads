@@ -4,4 +4,4 @@ Description=Delete all Textpads pad data
 [Service]
 Type=oneshot
 Environment=PAD_DATA_DIR=/opt/pad/data
-ExecStart=/usr/local/bin/textpads-delete-all.sh
+ExecStart=/usr/local/bin/textpads-full-cleanup.sh

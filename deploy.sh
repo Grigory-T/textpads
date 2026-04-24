@@ -32,10 +32,12 @@ sudo nginx -t
 
 echo "=== Systemd service ==="
 sudo cp "$REPO_DIR/pad.service" /etc/systemd/system/pad.service
-sudo cp "$REPO_DIR/textpads-weekly-cleanup.service" /etc/systemd/system/textpads-weekly-cleanup.service
-sudo cp "$REPO_DIR/textpads-weekly-cleanup.timer" /etc/systemd/system/textpads-weekly-cleanup.timer
-sudo cp "$REPO_DIR/cleanup-pads.sh" /usr/local/bin/textpads-delete-all.sh
-sudo chmod 755 /usr/local/bin/textpads-delete-all.sh
+sudo cp "$REPO_DIR/textpads-full-cleanup.service" /etc/systemd/system/textpads-full-cleanup.service
+sudo cp "$REPO_DIR/textpads-full-cleanup.timer" /etc/systemd/system/textpads-full-cleanup.timer
+sudo cp "$REPO_DIR/textpads-full-cleanup.sh" /usr/local/bin/textpads-full-cleanup.sh
+sudo chmod 755 /usr/local/bin/textpads-full-cleanup.sh
+sudo systemctl disable --now textpads-weekly-cleanup.timer 2>/dev/null || true
+sudo rm -f /etc/systemd/system/textpads-weekly-cleanup.service /etc/systemd/system/textpads-weekly-cleanup.timer /usr/local/bin/textpads-delete-all.sh
 sudo systemctl daemon-reload
 
 echo "=== Firewall ==="
@@ -45,7 +47,7 @@ sudo ufw allow 443/tcp comment 'HTTPS' 2>/dev/null || true
 echo "=== Start services ==="
 sudo systemctl enable --now pad.service
 sudo systemctl restart pad.service
-sudo systemctl enable --now textpads-weekly-cleanup.timer
+sudo systemctl enable --now textpads-full-cleanup.timer
 sudo systemctl enable --now nginx
 sudo systemctl reload nginx
 

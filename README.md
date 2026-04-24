@@ -90,14 +90,14 @@ These settings are intended to be easy to find and change:
 
 - **Auto-expire (server-side):** edit `pad.service` and set `PAD_EXPIRY_DAYS` (or `PAD_EXPIRY_SECONDS`).
 - **Expiry scan interval:** edit `pad.service` and set `PAD_EXPIRY_SCAN_MINUTES` (or `PAD_EXPIRY_SCAN_SECONDS`).
-- **Full wipe schedule:** edit `textpads-weekly-cleanup.timer` (defaults to every 30 days).
+- **Full wipe schedule:** edit `textpads-full-cleanup.timer` (defaults to every 30 days).
 
 After changing systemd unit files:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl restart pad.service
-sudo systemctl restart textpads-weekly-cleanup.timer
+sudo systemctl restart textpads-full-cleanup.timer
 ```
 
 ## Stack
@@ -123,5 +123,5 @@ Note:
 The repository includes a simple shell script for deleting all pads:
 
 ```bash
-bash cleanup-pads.sh
+bash textpads-full-cleanup.sh
 ```
