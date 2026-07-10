@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 DATA_DIR = Path(os.environ.get("PAD_DATA_DIR", "/opt/pad/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+STATIC_DIR = Path(os.environ.get("PAD_STATIC_DIR", Path(__file__).parent / "static"))
 
 MAX_BODY_SIZE = 3_000_000
 MAX_TEXT_SIZE = 2_800_000
@@ -166,6 +167,48 @@ class PadHandler(BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
+    def send_static(self, path, content_type, head_only=False):
+        try:
+            body = path.read_bytes()
+        except OSError:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
+            "base-uri 'none'; form-action 'self'",
+        )
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(body)
+
+    def serve_page(self, head_only=False):
+        path = urlparse(self.path).path
+        if path == "/":
+            self.send_static(STATIC_DIR / "index.html", "text/html; charset=utf-8", head_only)
+        elif path == "/robots.txt":
+            self.send_static(STATIC_DIR / "robots.txt", "text/plain; charset=utf-8", head_only)
+        elif path == "/static/style.css":
+            self.send_static(STATIC_DIR / "style.css", "text/css; charset=utf-8", head_only)
+        elif path == "/favicon.ico":
+            self.send_error(404)
+        else:
+            self.send_static(STATIC_DIR / "pad.html", "text/html; charset=utf-8", head_only)
+
+    def do_HEAD(self):
+        if urlparse(self.path).path.startswith("/api/"):
+            self.send_json(405, {"error": "method not allowed"})
+            return
+        self.serve_page(head_only=True)
+
     def client_ip(self):
         return self.headers.get("X-Real-IP") or self.client_address[0]
 
@@ -196,7 +239,7 @@ class PadHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         name, action, query = self.pad_request()
         if name is None:
-            self.send_json(404, {"error": "not found"})
+            self.serve_page()
             return
 
         with pad_locks[name]:
