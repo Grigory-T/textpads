@@ -1,0 +1,58 @@
+#!/bin/bash
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "=== Install nginx ==="
+sudo apt-get update -qq
+sudo apt-get install -y nginx
+
+echo "=== Create directories ==="
+sudo mkdir -p /opt/pad/static /opt/pad/data
+if ! id -u pad >/dev/null 2>&1; then
+  sudo useradd --system --home /opt/pad --shell /usr/sbin/nologin pad
+fi
+sudo chown -R pad:pad /opt/pad
+sudo chmod 700 /opt/pad/data
+
+echo "=== Python venv ==="
+sudo python3 -m venv /opt/pad/venv
+sudo /opt/pad/venv/bin/pip install --quiet websockets
+
+echo "=== Copy app files ==="
+sudo install -o root -g root -m 0644 "$REPO_DIR/server.py" /opt/pad/server.py
+sudo install -o root -g root -m 0644 "$REPO_DIR/static/"* /opt/pad/static/
+
+echo "=== Nginx config ==="
+sudo cp "$REPO_DIR/pad-ratelimit.conf" /etc/nginx/conf.d/pad-ratelimit.conf
+sudo cp "$REPO_DIR/pad-nginx.conf" /etc/nginx/sites-available/pad
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo ln -sf /etc/nginx/sites-available/pad /etc/nginx/sites-enabled/pad
+sudo nginx -t
+
+echo "=== Systemd service ==="
+sudo cp "$REPO_DIR/pad.service" /etc/systemd/system/pad.service
+sudo cp "$REPO_DIR/textpads-full-cleanup.service" /etc/systemd/system/textpads-full-cleanup.service
+sudo cp "$REPO_DIR/textpads-full-cleanup.timer" /etc/systemd/system/textpads-full-cleanup.timer
+sudo cp "$REPO_DIR/textpads-full-cleanup.sh" /usr/local/bin/textpads-full-cleanup.sh
+sudo chmod 755 /usr/local/bin/textpads-full-cleanup.sh
+sudo systemctl disable --now textpads-weekly-cleanup.timer 2>/dev/null || true
+sudo rm -f /etc/systemd/system/textpads-weekly-cleanup.service /etc/systemd/system/textpads-weekly-cleanup.timer /usr/local/bin/textpads-delete-all.sh
+sudo systemctl daemon-reload
+
+echo "=== Firewall ==="
+sudo ufw allow 80/tcp comment 'HTTP' 2>/dev/null || true
+sudo ufw allow 443/tcp comment 'HTTPS' 2>/dev/null || true
+
+echo "=== Start services ==="
+sudo systemctl enable --now pad.service
+sudo systemctl restart pad.service
+sudo systemctl enable --now textpads-full-cleanup.timer
+sudo systemctl enable --now nginx
+sudo systemctl reload nginx
+
+sleep 1
+echo "=== Status ==="
+systemctl is-active pad.service
+systemctl is-active nginx
+echo "Done."

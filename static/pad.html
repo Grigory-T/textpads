@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pad</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="/static/style.css?v=4">
+</head>
+<body class="pad-body">
+
+<!-- Password dialog (hidden by default) -->
+<div class="overlay" id="auth-overlay" style="display:none">
+  <div class="auth-dialog">
+    <h2>Enter password</h2>
+    <p class="auth-desc">This pad requires a password to access.</p>
+    <form id="auth-form">
+      <input type="password" id="auth-password" placeholder="password" autocomplete="off" autofocus>
+      <button type="submit" class="btn">Open</button>
+    </form>
+    <p class="auth-error" id="auth-error"></p>
+  </div>
+</div>
+
+<!-- Editor (hidden by default) -->
+<div class="editor-wrap" id="editor-wrap" style="display:none">
+  <div class="toolbar">
+    <a href="/" class="toolbar-brand">Pad</a>
+    <span class="toolbar-name" id="pad-name"></span>
+    <span class="toolbar-lock" id="lock-icon" title="Encrypted"></span>
+    <span class="toolbar-spacer"></span>
+    <span class="toolbar-info" id="line-info">Ln 1, Col 1</span>
+    <span class="toolbar-status" id="status">connecting</span>
+    <span class="toolbar-clients" id="clients"></span>
+  </div>
+  <div class="editor">
+    <div class="gutter" id="gutter" aria-hidden="true"></div>
+    <textarea id="text" wrap="off" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" disabled></textarea>
+  </div>
+</div>
+
+<script>
+(function() {
+  const padName = window.location.pathname.replace(/^\/+/, '');
+  if (!padName || padName === 'index.html' || padName.startsWith('static/')) {
+    window.location.href = '/';
+    return;
+  }
+
+  // --- Crypto helpers (AES-256-GCM with PBKDF2) ---
+  const subtle = (window.crypto || window.msCrypto).subtle;
+
+  function hexToBytes(hex) {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2)
+      bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+    return bytes;
+  }
+
+  function bytesToHex(bytes) {
+    return Array.from(bytes, function(b) {
+      return b.toString(16).padStart(2, '0');
+    }).join('');
+  }
+
+  function randomHex(lengthBytes) {
+    return bytesToHex(crypto.getRandomValues(new Uint8Array(lengthBytes)));
+  }
+
+  async function deriveKey(password, saltHex) {
+    const keyMaterial = await subtle.importKey(
+      'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
+    );
+    return subtle.deriveKey(
+      { name: 'PBKDF2', salt: hexToBytes(saltHex), iterations: 600000, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  }
+
+  async function deriveAuthHash(password, saltHex) {
+    const keyMaterial = await subtle.importKey(
+      'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+    );
+    const bits = await subtle.deriveBits(
+      { name: 'PBKDF2', salt: hexToBytes(saltHex), iterations: 600000, hash: 'SHA-256' },
+      keyMaterial,
+      256
+    );
+    return bytesToHex(new Uint8Array(bits));
+  }
+
+  async function encrypt(key, plaintext) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
+    const combined = new Uint8Array(iv.length + ct.byteLength);
+    combined.set(iv);
+    combined.set(new Uint8Array(ct), iv.length);
+    return btoa(String.fromCharCode(...combined));
+  }
+
+  async function decrypt(key, b64) {
+    if (!b64) return '';
+    try {
+      const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      return new TextDecoder().decode(
+        await subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, key, raw.slice(12))
+      );
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // --- State ---
+  let password = '';
+  let aesKey = null;
+  let isEncrypted = false;
+  let ws = null;
+  let currentVersion = 0;
+  let sendTimer = null;
+  let reconnectDelay = 1000;
+  let connected = false;
+  let authenticated = false;
+  let reconnectTimer = null;
+  let sendInFlight = null;
+  let lastSyncedText = '';
+  let localDirty = false;
+  let canEdit = false;
+  let hasPassword = false;  // true = password was provided (from landing or dialog)
+  let wantsCreate = false;  // true = create new pad (only from landing page)
+  let keyReady = null;  // Promise that resolves when AES key is derived
+
+  const gutter = document.getElementById('gutter');
+  const textarea = document.getElementById('text');
+  const statusEl = document.getElementById('status');
+  const clientsEl = document.getElementById('clients');
+  const lineInfoEl = document.getElementById('line-info');
+  const authOverlay = document.getElementById('auth-overlay');
+  const editorWrap = document.getElementById('editor-wrap');
+  const authError = document.getElementById('auth-error');
+  const lockIcon = document.getElementById('lock-icon');
+
+  document.getElementById('pad-name').textContent = padName;
+  document.title = padName + ' \u2014 Pad';
+
+  // --- Determine how we got here ---
+  var storedFor = sessionStorage.getItem('pad_password_for');
+  var storedPw = sessionStorage.getItem('pad_password');
+
+  if (storedFor === padName && storedPw !== null) {
+    // Came from landing page — password already entered, never show dialog
+    password = storedPw;
+    hasPassword = true;
+    wantsCreate = sessionStorage.getItem('pad_create') === '1';
+    sessionStorage.removeItem('pad_password');
+    sessionStorage.removeItem('pad_password_for');
+    sessionStorage.removeItem('pad_create');
+    connect();
+  } else {
+    // Direct URL access — try empty password first (works for open pads)
+    password = '';
+    hasPassword = false;
+    wantsCreate = false;
+    connect();
+  }
+
+  // --- Auth dialog (only for direct access when pad is protected) ---
+  document.getElementById('auth-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    password = document.getElementById('auth-password').value;
+    hasPassword = true;
+    authError.textContent = '';
+    connect();
+  });
+
+  function showEditor() {
+    authOverlay.style.display = 'none';
+    editorWrap.style.display = '';
+    autoResizeTextarea();
+    updateGutter();
+  }
+
+  function showAuthDialog(errorMsg) {
+    authOverlay.style.display = '';
+    editorWrap.style.display = 'none';
+    authError.textContent = errorMsg || '';
+    document.getElementById('auth-password').value = '';
+    document.getElementById('auth-password').focus();
+  }
+
+  function autoResizeTextarea() {
+    textarea.style.height = 'auto';
+    textarea.style.height = textarea.scrollHeight + 'px';
+  }
+
+  function updateGutter() {
+    var lines = textarea.value.split('\n');
+    var html = '';
+    for (var i = 0; i < lines.length; i++) {
+      html += '<div class="gutter-line">' + (i + 1) + '</div>';
+    }
+    gutter.innerHTML = html;
+  }
+
+  var resizeTimer;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+      autoResizeTextarea();
+      updateGutter();
+    }, 100);
+  });
+
+  // --- Cursor position ---
+  function updateLineInfo() {
+    const val = textarea.value;
+    const pos = textarea.selectionStart;
+    const before = val.substring(0, pos);
+    const line = before.split('\n').length;
+    const col = pos - before.lastIndexOf('\n');
+    const total = val.split('\n').length;
+    lineInfoEl.textContent = 'Ln ' + line + '/' + total + ', Col ' + col;
+  }
+
+  textarea.addEventListener('click', updateLineInfo);
+  textarea.addEventListener('keyup', updateLineInfo);
+
+  // --- Tab key ---
+  textarea.addEventListener('keydown', function(e) {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = this.selectionStart;
+      const end = this.selectionEnd;
+      this.value = this.value.substring(0, start) + '  ' + this.value.substring(end);
+      this.selectionStart = this.selectionEnd = start + 2;
+      onInput();
+    }
+  });
+
+  // --- Encrypt/decrypt wrappers ---
+  async function encryptIfNeeded(plaintext) {
+    if (!isEncrypted) return plaintext;
+    if (!aesKey && keyReady) await keyReady;
+    if (!aesKey) return plaintext;
+    return await encrypt(aesKey, plaintext);
+  }
+
+  async function decryptIfNeeded(text) {
+    if (!isEncrypted) return text;
+    if (!aesKey && keyReady) await keyReady;
+    if (!aesKey) return text;
+    if (!text) return '';
+    const result = await decrypt(aesKey, text);
+    if (result === null) {
+      setStatus('decrypt error', 'err');
+      return '';
+    }
+    return result;
+  }
+
+  // --- WebSocket ---
+  function setStatus(text, type) {
+    statusEl.textContent = text;
+    statusEl.className = 'toolbar-status status-' + type;
+  }
+
+  function setEditorText(text) {
+    const pos = textarea.selectionStart;
+    const scrollY = window.scrollY;
+    const oldLen = textarea.value.length;
+    textarea.value = text;
+    const newLen = textarea.value.length;
+    const delta = newLen - oldLen;
+    autoResizeTextarea();
+    textarea.selectionStart = textarea.selectionEnd = Math.max(0, Math.min(pos + delta, newLen));
+    window.scrollTo(0, scrollY);
+    updateGutter();
+    updateLineInfo();
+  }
+
+  function scheduleSend(delay) {
+    clearTimeout(sendTimer);
+    if (!localDirty || sendInFlight) return;
+    sendTimer = setTimeout(doSend, delay === undefined ? 300 : delay);
+  }
+
+  async function acceptServerText(encodedText, version, initial) {
+    const remoteText = await decryptIfNeeded(encodedText);
+    if (remoteText === null) return;
+    lastSyncedText = remoteText;
+    currentVersion = version;
+    sendInFlight = null;
+    if (textarea.value !== remoteText) setEditorText(remoteText);
+    localDirty = false;
+  }
+
+  function connect() {
+    clearTimeout(reconnectTimer);
+    const oldSocket = ws;
+    if (oldSocket) { try { oldSocket.close(); } catch(e) {} }
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(proto + '//' + location.host + '/ws/' + padName);
+    ws = socket;
+
+    socket.onopen = function() {
+      var msg = { type: 'start' };
+      if (wantsCreate) msg.create = true;
+      socket.send(JSON.stringify(msg));
+    };
+
+    socket.onmessage = async function(event) {
+      if (socket !== ws) return;
+      const data = JSON.parse(event.data);
+
+      if (data.type === 'auth_fail') {
+        socket.close();
+        authenticated = false;
+        if (hasPassword) {
+          showAuthDialog('Authentication failed.');
+        } else {
+          // Direct access, empty password didn't work — pad is protected or missing
+          showAuthDialog('');
+        }
+        return;
+      }
+
+      if (data.type === 'auth_challenge') {
+        if (data.exists && data.encrypted && !hasPassword) {
+          socket.close();
+          showAuthDialog('');
+          return;
+        }
+
+        var authMsg = { type: 'auth' };
+
+        if (!data.exists) {
+          var createEncrypted = password.length > 0;
+          authMsg.encrypted = createEncrypted;
+          if (createEncrypted) {
+            authMsg.auth_salt = randomHex(16);
+            authMsg.enc_salt = randomHex(16);
+            authMsg.auth_hash = await deriveAuthHash(password, authMsg.auth_salt);
+          }
+        } else if (data.encrypted) {
+          authMsg.auth_hash = await deriveAuthHash(password, data.auth_salt);
+        }
+
+        socket.send(JSON.stringify(authMsg));
+        return;
+      }
+
+      if (data.type === 'auth_ok') {
+        authenticated = true;
+        isEncrypted = data.encrypted;
+        if (isEncrypted) {
+          // Store promise so init/update handlers can await it
+          keyReady = deriveKey(password, data.enc_salt).then(function(k) { aesKey = k; });
+          await keyReady;
+          lockIcon.textContent = '\u{1F512}';
+        } else {
+          keyReady = null;
+          lockIcon.textContent = '';
+        }
+        showEditor();
+        connected = true;
+        reconnectDelay = 1000;
+        setStatus('connected', 'ok');
+        textarea.focus();
+        scheduleSend(50);
+        return;
+      }
+
+      if (data.type === 'init') {
+        await acceptServerText(data.text, data.version, true);
+        return;
+      }
+
+      if (data.type === 'role') {
+        canEdit = data.editor;
+        textarea.disabled = !canEdit;
+        clientsEl.textContent = data.editor ? 'editor' : 'view only';
+        if (data.editor) {
+          setStatus(localDirty ? 'unsaved' : 'ready', localDirty ? 'warn' : 'ok');
+          scheduleSend(50);
+        } else {
+          setStatus('another browser is editing', 'warn');
+        }
+        return;
+      }
+
+      if (data.type === 'update') {
+        await acceptServerText(data.text, data.version, false);
+        return;
+      }
+
+      if (data.type === 'ack') {
+        if (!sendInFlight) return;
+        lastSyncedText = sendInFlight.text;
+        currentVersion = data.version;
+        sendInFlight = null;
+        localDirty = textarea.value !== lastSyncedText;
+        if (localDirty) {
+          setStatus('saving', 'warn');
+          scheduleSend(50);
+        } else {
+          setStatus('saved', 'ok');
+        }
+        return;
+      }
+
+      if (data.type === 'readonly') {
+        await acceptServerText(data.text, data.version, false);
+        textarea.disabled = true;
+        setStatus('another browser is editing', 'warn');
+        return;
+      }
+
+      if (data.type === 'error') {
+        setStatus(data.message, 'err');
+        setTimeout(function() { if (connected) setStatus('connected', 'ok'); }, 3000);
+      }
+    };
+
+    socket.onclose = function() {
+      if (socket !== ws) return;
+      connected = false;
+      canEdit = false;
+      textarea.disabled = true;
+      sendInFlight = null;
+      if (!authenticated) return;
+      setStatus('disconnected', 'err');
+      clientsEl.textContent = '';
+      reconnectTimer = setTimeout(function() {
+        setStatus('reconnecting', 'warn');
+        connect();
+      }, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
+    };
+
+    socket.onerror = function() {};
+  }
+
+  async function doSend() {
+    if (!localDirty || sendInFlight || !connected || !canEdit) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const snapshot = textarea.value;
+      const socket = ws;
+      sendInFlight = { text: snapshot, version: currentVersion };
+      setStatus('saving', 'warn');
+      const encoded = await encryptIfNeeded(snapshot);
+      if (socket !== ws || socket.readyState !== WebSocket.OPEN || !connected) {
+        sendInFlight = null;
+        return;
+      }
+      socket.send(JSON.stringify({
+        type: 'update',
+        text: encoded,
+        version: currentVersion
+      }));
+    }
+  }
+
+  function onInput() {
+    localDirty = textarea.value !== lastSyncedText;
+    autoResizeTextarea();
+    updateGutter();
+    updateLineInfo();
+    setStatus(connected ? 'unsaved' : 'disconnected with unsaved text', 'warn');
+    scheduleSend(300);
+  }
+
+  textarea.addEventListener('input', onInput);
+  autoResizeTextarea();
+  updateGutter();
+  updateLineInfo();
+})();
+</script>
+</body>
+</html>
