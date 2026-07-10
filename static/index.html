@@ -43,6 +43,18 @@
 </div>
 <script>
 (function() {
+  if (!window.isSecureContext) {
+    ['create-password', 'open-password'].forEach(function(id) {
+      var input = document.getElementById(id);
+      input.value = '';
+      input.disabled = true;
+      input.placeholder = 'passwords require HTTPS';
+    });
+    document.querySelector('.landing-info').innerHTML =
+      '<p>HTTP test mode: create and open pads without a password.</p>' +
+      '<p>Password-protected pads require HTTPS.</p>';
+  }
+
   function clean(name) {
     return name.trim().replace(/^\/+/, '').replace(/[^a-zA-Z0-9\-]/g, '');
   }

@@ -45,7 +45,7 @@
     return;
   }
 
-  const subtle = window.crypto.subtle;
+  const subtle = window.crypto && window.crypto.subtle;
   const textarea = document.getElementById('text');
   const gutter = document.getElementById('gutter');
   const statusEl = document.getElementById('status');
@@ -162,10 +162,13 @@
     textarea.focus();
   }
 
-  function showAuth(message) {
+  function showAuth(message, passwordAllowed) {
     editorWrap.style.display = 'none';
     authOverlay.style.display = '';
     authError.textContent = message || '';
+    const form = document.getElementById('auth-form');
+    form.style.display = passwordAllowed === false ? 'none' : '';
+    if (passwordAllowed === false) return;
     const input = document.getElementById('auth-password');
     input.value = '';
     input.focus();
@@ -306,6 +309,10 @@
   async function openPad(meta) {
     encrypted = meta.encrypted;
     if (encrypted) {
+      if (!subtle) {
+        showAuth('Password-protected pads require HTTPS.', false);
+        return;
+      }
       if (!password) {
         showAuth('');
         return;
@@ -340,7 +347,7 @@
       const meta = await response.json();
       if (!meta.exists) {
         if (!wantsCreate) {
-          showAuth('Pad does not exist. Create it from the home page.');
+          showAuth('Pad does not exist. Create it from the home page without a password.', false);
           return;
         }
         await createPad(meta);
