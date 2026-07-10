@@ -17,7 +17,6 @@ sudo chmod 700 /opt/pad/data
 
 echo "=== Python venv ==="
 sudo python3 -m venv /opt/pad/venv
-sudo /opt/pad/venv/bin/pip install --quiet websockets
 
 echo "=== Copy app files ==="
 sudo install -o root -g root -m 0644 "$REPO_DIR/server.py" /opt/pad/server.py

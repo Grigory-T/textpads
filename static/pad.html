@@ -9,7 +9,6 @@
 </head>
 <body class="pad-body">
 
-<!-- Password dialog (hidden by default) -->
 <div class="overlay" id="auth-overlay" style="display:none">
   <div class="auth-dialog">
     <h2>Enter password</h2>
@@ -22,7 +21,6 @@
   </div>
 </div>
 
-<!-- Editor (hidden by default) -->
 <div class="editor-wrap" id="editor-wrap" style="display:none">
   <div class="toolbar">
     <a href="/" class="toolbar-brand">Pad</a>
@@ -30,8 +28,8 @@
     <span class="toolbar-lock" id="lock-icon" title="Encrypted"></span>
     <span class="toolbar-spacer"></span>
     <span class="toolbar-info" id="line-info">Ln 1, Col 1</span>
-    <span class="toolbar-status" id="status">connecting</span>
-    <span class="toolbar-clients" id="clients"></span>
+    <span class="toolbar-status" id="status">opening</span>
+    <span class="toolbar-clients">all browsers can edit</span>
   </div>
   <div class="editor">
     <div class="gutter" id="gutter" aria-hidden="true"></div>
@@ -47,434 +45,361 @@
     return;
   }
 
-  // --- Crypto helpers (AES-256-GCM with PBKDF2) ---
-  const subtle = (window.crypto || window.msCrypto).subtle;
-
-  function hexToBytes(hex) {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < hex.length; i += 2)
-      bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
-    return bytes;
-  }
-
-  function bytesToHex(bytes) {
-    return Array.from(bytes, function(b) {
-      return b.toString(16).padStart(2, '0');
-    }).join('');
-  }
-
-  function randomHex(lengthBytes) {
-    return bytesToHex(crypto.getRandomValues(new Uint8Array(lengthBytes)));
-  }
-
-  async function deriveKey(password, saltHex) {
-    const keyMaterial = await subtle.importKey(
-      'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
-    );
-    return subtle.deriveKey(
-      { name: 'PBKDF2', salt: hexToBytes(saltHex), iterations: 600000, hash: 'SHA-256' },
-      keyMaterial,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
-  }
-
-  async function deriveAuthHash(password, saltHex) {
-    const keyMaterial = await subtle.importKey(
-      'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
-    );
-    const bits = await subtle.deriveBits(
-      { name: 'PBKDF2', salt: hexToBytes(saltHex), iterations: 600000, hash: 'SHA-256' },
-      keyMaterial,
-      256
-    );
-    return bytesToHex(new Uint8Array(bits));
-  }
-
-  async function encrypt(key, plaintext) {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
-    const combined = new Uint8Array(iv.length + ct.byteLength);
-    combined.set(iv);
-    combined.set(new Uint8Array(ct), iv.length);
-    return btoa(String.fromCharCode(...combined));
-  }
-
-  async function decrypt(key, b64) {
-    if (!b64) return '';
-    try {
-      const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-      return new TextDecoder().decode(
-        await subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, key, raw.slice(12))
-      );
-    } catch (e) {
-      return null;
-    }
-  }
-
-  // --- State ---
-  let password = '';
-  let aesKey = null;
-  let isEncrypted = false;
-  let ws = null;
-  let currentVersion = 0;
-  let sendTimer = null;
-  let reconnectDelay = 1000;
-  let connected = false;
-  let authenticated = false;
-  let reconnectTimer = null;
-  let sendInFlight = null;
-  let lastSyncedText = '';
-  let localDirty = false;
-  let canEdit = false;
-  let hasPassword = false;  // true = password was provided (from landing or dialog)
-  let wantsCreate = false;  // true = create new pad (only from landing page)
-  let keyReady = null;  // Promise that resolves when AES key is derived
-
-  const gutter = document.getElementById('gutter');
+  const subtle = window.crypto.subtle;
   const textarea = document.getElementById('text');
+  const gutter = document.getElementById('gutter');
   const statusEl = document.getElementById('status');
-  const clientsEl = document.getElementById('clients');
   const lineInfoEl = document.getElementById('line-info');
   const authOverlay = document.getElementById('auth-overlay');
   const editorWrap = document.getElementById('editor-wrap');
   const authError = document.getElementById('auth-error');
   const lockIcon = document.getElementById('lock-icon');
 
+  let password = '';
+  let wantsCreate = false;
+  let authHash = '';
+  let aesKey = null;
+  let encrypted = false;
+  let version = 0;
+  let dirty = false;
+  let saving = false;
+  let saveTimer = null;
+  let retryTimer = null;
+  let pollTimer = null;
+  let opened = false;
+
   document.getElementById('pad-name').textContent = padName;
   document.title = padName + ' \u2014 Pad';
 
-  // --- Determine how we got here ---
-  var storedFor = sessionStorage.getItem('pad_password_for');
-  var storedPw = sessionStorage.getItem('pad_password');
-
-  if (storedFor === padName && storedPw !== null) {
-    // Came from landing page — password already entered, never show dialog
-    password = storedPw;
-    hasPassword = true;
-    wantsCreate = sessionStorage.getItem('pad_create') === '1';
-    sessionStorage.removeItem('pad_password');
-    sessionStorage.removeItem('pad_password_for');
-    sessionStorage.removeItem('pad_create');
-    connect();
-  } else {
-    // Direct URL access — try empty password first (works for open pads)
-    password = '';
-    hasPassword = false;
-    wantsCreate = false;
-    connect();
+  function bytesToHex(bytes) {
+    return Array.from(bytes, function(byte) {
+      return byte.toString(16).padStart(2, '0');
+    }).join('');
   }
 
-  // --- Auth dialog (only for direct access when pad is protected) ---
-  document.getElementById('auth-form').addEventListener('submit', function(e) {
-    e.preventDefault();
-    password = document.getElementById('auth-password').value;
-    hasPassword = true;
-    authError.textContent = '';
-    connect();
-  });
-
-  function showEditor() {
-    authOverlay.style.display = 'none';
-    editorWrap.style.display = '';
-    autoResizeTextarea();
-    updateGutter();
-  }
-
-  function showAuthDialog(errorMsg) {
-    authOverlay.style.display = '';
-    editorWrap.style.display = 'none';
-    authError.textContent = errorMsg || '';
-    document.getElementById('auth-password').value = '';
-    document.getElementById('auth-password').focus();
-  }
-
-  function autoResizeTextarea() {
-    textarea.style.height = 'auto';
-    textarea.style.height = textarea.scrollHeight + 'px';
-  }
-
-  function updateGutter() {
-    var lines = textarea.value.split('\n');
-    var html = '';
-    for (var i = 0; i < lines.length; i++) {
-      html += '<div class="gutter-line">' + (i + 1) + '</div>';
+  function hexToBytes(hex) {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let index = 0; index < hex.length; index += 2) {
+      bytes[index / 2] = parseInt(hex.slice(index, index + 2), 16);
     }
-    gutter.innerHTML = html;
+    return bytes;
   }
 
-  var resizeTimer;
-  window.addEventListener('resize', function() {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(function() {
-      autoResizeTextarea();
-      updateGutter();
-    }, 100);
-  });
-
-  // --- Cursor position ---
-  function updateLineInfo() {
-    const val = textarea.value;
-    const pos = textarea.selectionStart;
-    const before = val.substring(0, pos);
-    const line = before.split('\n').length;
-    const col = pos - before.lastIndexOf('\n');
-    const total = val.split('\n').length;
-    lineInfoEl.textContent = 'Ln ' + line + '/' + total + ', Col ' + col;
+  function randomHex(length) {
+    return bytesToHex(crypto.getRandomValues(new Uint8Array(length)));
   }
 
-  textarea.addEventListener('click', updateLineInfo);
-  textarea.addEventListener('keyup', updateLineInfo);
+  async function deriveKey(rawPassword, salt) {
+    const material = await subtle.importKey(
+      'raw', new TextEncoder().encode(rawPassword), 'PBKDF2', false, ['deriveKey']
+    );
+    return subtle.deriveKey(
+      { name: 'PBKDF2', salt: hexToBytes(salt), iterations: 600000, hash: 'SHA-256' },
+      material,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  }
 
-  // --- Tab key ---
-  textarea.addEventListener('keydown', function(e) {
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const start = this.selectionStart;
-      const end = this.selectionEnd;
-      this.value = this.value.substring(0, start) + '  ' + this.value.substring(end);
-      this.selectionStart = this.selectionEnd = start + 2;
-      onInput();
+  async function deriveAuthHash(rawPassword, salt) {
+    const material = await subtle.importKey(
+      'raw', new TextEncoder().encode(rawPassword), 'PBKDF2', false, ['deriveBits']
+    );
+    const bits = await subtle.deriveBits(
+      { name: 'PBKDF2', salt: hexToBytes(salt), iterations: 600000, hash: 'SHA-256' },
+      material,
+      256
+    );
+    return bytesToHex(new Uint8Array(bits));
+  }
+
+  async function encryptText(text) {
+    if (!encrypted) return text;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await subtle.encrypt(
+      { name: 'AES-GCM', iv: iv }, aesKey, new TextEncoder().encode(text)
+    );
+    const combined = new Uint8Array(iv.length + ciphertext.byteLength);
+    combined.set(iv);
+    combined.set(new Uint8Array(ciphertext), iv.length);
+    return btoa(String.fromCharCode.apply(null, combined));
+  }
+
+  async function decryptText(text) {
+    if (!encrypted || !text) return text || '';
+    try {
+      const raw = Uint8Array.from(atob(text), function(char) { return char.charCodeAt(0); });
+      const plaintext = await subtle.decrypt(
+        { name: 'AES-GCM', iv: raw.slice(0, 12) }, aesKey, raw.slice(12)
+      );
+      return new TextDecoder().decode(plaintext);
+    } catch (error) {
+      throw new Error('Unable to decrypt this pad');
     }
-  });
-
-  // --- Encrypt/decrypt wrappers ---
-  async function encryptIfNeeded(plaintext) {
-    if (!isEncrypted) return plaintext;
-    if (!aesKey && keyReady) await keyReady;
-    if (!aesKey) return plaintext;
-    return await encrypt(aesKey, plaintext);
   }
 
-  async function decryptIfNeeded(text) {
-    if (!isEncrypted) return text;
-    if (!aesKey && keyReady) await keyReady;
-    if (!aesKey) return text;
-    if (!text) return '';
-    const result = await decrypt(aesKey, text);
-    if (result === null) {
-      setStatus('decrypt error', 'err');
-      return '';
-    }
-    return result;
+  function apiHeaders(includeJson) {
+    const headers = {};
+    if (includeJson) headers['Content-Type'] = 'application/json';
+    if (authHash) headers['X-Pad-Auth'] = authHash;
+    return headers;
   }
 
-  // --- WebSocket ---
   function setStatus(text, type) {
     statusEl.textContent = text;
     statusEl.className = 'toolbar-status status-' + type;
   }
 
-  function setEditorText(text) {
-    const pos = textarea.selectionStart;
-    const scrollY = window.scrollY;
-    const oldLen = textarea.value.length;
-    textarea.value = text;
-    const newLen = textarea.value.length;
-    const delta = newLen - oldLen;
-    autoResizeTextarea();
-    textarea.selectionStart = textarea.selectionEnd = Math.max(0, Math.min(pos + delta, newLen));
-    window.scrollTo(0, scrollY);
+  function showEditor() {
+    authOverlay.style.display = 'none';
+    editorWrap.style.display = '';
+    textarea.disabled = false;
+    opened = true;
+    resizeEditor();
     updateGutter();
     updateLineInfo();
+    textarea.focus();
   }
 
-  function scheduleSend(delay) {
-    clearTimeout(sendTimer);
-    if (!localDirty || sendInFlight) return;
-    sendTimer = setTimeout(doSend, delay === undefined ? 300 : delay);
+  function showAuth(message) {
+    editorWrap.style.display = 'none';
+    authOverlay.style.display = '';
+    authError.textContent = message || '';
+    const input = document.getElementById('auth-password');
+    input.value = '';
+    input.focus();
   }
 
-  async function acceptServerText(encodedText, version, initial) {
-    const remoteText = await decryptIfNeeded(encodedText);
-    if (remoteText === null) return;
-    lastSyncedText = remoteText;
-    currentVersion = version;
-    sendInFlight = null;
-    if (textarea.value !== remoteText) setEditorText(remoteText);
-    localDirty = false;
+  function resizeEditor() {
+    textarea.style.height = 'auto';
+    textarea.style.height = textarea.scrollHeight + 'px';
   }
 
-  function connect() {
-    clearTimeout(reconnectTimer);
-    const oldSocket = ws;
-    if (oldSocket) { try { oldSocket.close(); } catch(e) {} }
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(proto + '//' + location.host + '/ws/' + padName);
-    ws = socket;
-
-    socket.onopen = function() {
-      var msg = { type: 'start' };
-      if (wantsCreate) msg.create = true;
-      socket.send(JSON.stringify(msg));
-    };
-
-    socket.onmessage = async function(event) {
-      if (socket !== ws) return;
-      const data = JSON.parse(event.data);
-
-      if (data.type === 'auth_fail') {
-        socket.close();
-        authenticated = false;
-        if (hasPassword) {
-          showAuthDialog('Authentication failed.');
-        } else {
-          // Direct access, empty password didn't work — pad is protected or missing
-          showAuthDialog('');
-        }
-        return;
-      }
-
-      if (data.type === 'auth_challenge') {
-        if (data.exists && data.encrypted && !hasPassword) {
-          socket.close();
-          showAuthDialog('');
-          return;
-        }
-
-        var authMsg = { type: 'auth' };
-
-        if (!data.exists) {
-          var createEncrypted = password.length > 0;
-          authMsg.encrypted = createEncrypted;
-          if (createEncrypted) {
-            authMsg.auth_salt = randomHex(16);
-            authMsg.enc_salt = randomHex(16);
-            authMsg.auth_hash = await deriveAuthHash(password, authMsg.auth_salt);
-          }
-        } else if (data.encrypted) {
-          authMsg.auth_hash = await deriveAuthHash(password, data.auth_salt);
-        }
-
-        socket.send(JSON.stringify(authMsg));
-        return;
-      }
-
-      if (data.type === 'auth_ok') {
-        authenticated = true;
-        isEncrypted = data.encrypted;
-        if (isEncrypted) {
-          // Store promise so init/update handlers can await it
-          keyReady = deriveKey(password, data.enc_salt).then(function(k) { aesKey = k; });
-          await keyReady;
-          lockIcon.textContent = '\u{1F512}';
-        } else {
-          keyReady = null;
-          lockIcon.textContent = '';
-        }
-        showEditor();
-        connected = true;
-        reconnectDelay = 1000;
-        setStatus('connected', 'ok');
-        textarea.focus();
-        scheduleSend(50);
-        return;
-      }
-
-      if (data.type === 'init') {
-        await acceptServerText(data.text, data.version, true);
-        return;
-      }
-
-      if (data.type === 'role') {
-        canEdit = data.editor;
-        textarea.disabled = !canEdit;
-        clientsEl.textContent = data.editor ? 'editor' : 'view only';
-        if (data.editor) {
-          setStatus(localDirty ? 'unsaved' : 'ready', localDirty ? 'warn' : 'ok');
-          scheduleSend(50);
-        } else {
-          setStatus('another browser is editing', 'warn');
-        }
-        return;
-      }
-
-      if (data.type === 'update') {
-        await acceptServerText(data.text, data.version, false);
-        return;
-      }
-
-      if (data.type === 'ack') {
-        if (!sendInFlight) return;
-        lastSyncedText = sendInFlight.text;
-        currentVersion = data.version;
-        sendInFlight = null;
-        localDirty = textarea.value !== lastSyncedText;
-        if (localDirty) {
-          setStatus('saving', 'warn');
-          scheduleSend(50);
-        } else {
-          setStatus('saved', 'ok');
-        }
-        return;
-      }
-
-      if (data.type === 'readonly') {
-        await acceptServerText(data.text, data.version, false);
-        textarea.disabled = true;
-        setStatus('another browser is editing', 'warn');
-        return;
-      }
-
-      if (data.type === 'error') {
-        setStatus(data.message, 'err');
-        setTimeout(function() { if (connected) setStatus('connected', 'ok'); }, 3000);
-      }
-    };
-
-    socket.onclose = function() {
-      if (socket !== ws) return;
-      connected = false;
-      canEdit = false;
-      textarea.disabled = true;
-      sendInFlight = null;
-      if (!authenticated) return;
-      setStatus('disconnected', 'err');
-      clientsEl.textContent = '';
-      reconnectTimer = setTimeout(function() {
-        setStatus('reconnecting', 'warn');
-        connect();
-      }, reconnectDelay);
-      reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
-    };
-
-    socket.onerror = function() {};
+  function updateGutter() {
+    const count = textarea.value.split('\n').length;
+    let html = '';
+    for (let line = 1; line <= count; line++) {
+      html += '<div class="gutter-line">' + line + '</div>';
+    }
+    gutter.innerHTML = html;
   }
 
-  async function doSend() {
-    if (!localDirty || sendInFlight || !connected || !canEdit) return;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      const snapshot = textarea.value;
-      const socket = ws;
-      sendInFlight = { text: snapshot, version: currentVersion };
-      setStatus('saving', 'warn');
-      const encoded = await encryptIfNeeded(snapshot);
-      if (socket !== ws || socket.readyState !== WebSocket.OPEN || !connected) {
-        sendInFlight = null;
-        return;
-      }
-      socket.send(JSON.stringify({
-        type: 'update',
-        text: encoded,
-        version: currentVersion
-      }));
+  function updateLineInfo() {
+    const before = textarea.value.slice(0, textarea.selectionStart);
+    const line = before.split('\n').length;
+    const column = textarea.selectionStart - before.lastIndexOf('\n');
+    const total = textarea.value.split('\n').length;
+    lineInfoEl.textContent = 'Ln ' + line + '/' + total + ', Col ' + column;
+  }
+
+  function applyRemoteText(text) {
+    const position = textarea.selectionStart;
+    const scrollY = window.scrollY;
+    textarea.value = text;
+    resizeEditor();
+    updateGutter();
+    textarea.selectionStart = textarea.selectionEnd = Math.min(position, text.length);
+    updateLineInfo();
+    window.scrollTo(0, scrollY);
+  }
+
+  async function fetchDocument(since) {
+    const suffix = since === undefined ? '' : '?since=' + encodeURIComponent(since);
+    return fetch('/api/pads/' + encodeURIComponent(padName) + suffix, {
+      headers: apiHeaders(false),
+      cache: 'no-store'
+    });
+  }
+
+  async function poll() {
+    if (!opened || dirty || saving) return;
+    try {
+      const response = await fetchDocument(version);
+      if (response.status === 204) return;
+      if (!response.ok) throw new Error('update check failed');
+      const data = await response.json();
+      const remoteText = await decryptText(data.text);
+      version = data.version;
+      if (remoteText !== textarea.value) applyRemoteText(remoteText);
+      setStatus('saved', 'ok');
+    } catch (error) {
+      setStatus('offline; retrying', 'warn');
     }
   }
 
-  function onInput() {
-    localDirty = textarea.value !== lastSyncedText;
-    autoResizeTextarea();
-    updateGutter();
-    updateLineInfo();
-    setStatus(connected ? 'unsaved' : 'disconnected with unsaved text', 'warn');
-    scheduleSend(300);
+  async function save() {
+    clearTimeout(retryTimer);
+    if (!opened || !dirty || saving) return;
+    saving = true;
+    const snapshot = textarea.value;
+    const baseVersion = version;
+    setStatus('saving', 'warn');
+    try {
+      const response = await fetch('/api/pads/' + encodeURIComponent(padName), {
+        method: 'PUT',
+        headers: apiHeaders(true),
+        body: JSON.stringify({
+          text: await encryptText(snapshot),
+          version: baseVersion
+        })
+      });
+      if (response.status === 409) {
+        const latest = await response.json();
+        version = latest.version;
+        dirty = true;
+        saving = false;
+        setStatus('changed elsewhere; type again to save yours', 'warn');
+        return;
+      }
+      if (!response.ok) throw new Error('save failed');
+      const result = await response.json();
+      version = result.version;
+      dirty = textarea.value !== snapshot;
+      saving = false;
+      setStatus(dirty ? 'unsaved' : 'saved', dirty ? 'warn' : 'ok');
+      if (dirty) scheduleSave(50);
+    } catch (error) {
+      saving = false;
+      dirty = true;
+      setStatus('offline; save retrying', 'warn');
+      retryTimer = setTimeout(save, 1500);
+    }
   }
 
-  textarea.addEventListener('input', onInput);
-  autoResizeTextarea();
-  updateGutter();
-  updateLineInfo();
+  function scheduleSave(delay) {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, delay === undefined ? 250 : delay);
+  }
+
+  async function createPad(meta) {
+    encrypted = password.length > 0;
+    let authSalt = '';
+    let encSalt = '';
+    if (encrypted) {
+      authSalt = randomHex(16);
+      encSalt = randomHex(16);
+      authHash = await deriveAuthHash(password, authSalt);
+      aesKey = await deriveKey(password, encSalt);
+      lockIcon.textContent = '\u{1F512}';
+    }
+    const response = await fetch('/api/pads/' + encodeURIComponent(padName), {
+      method: 'PUT',
+      headers: apiHeaders(true),
+      body: JSON.stringify({
+        create: true,
+        encrypted: encrypted,
+        auth_salt: authSalt,
+        auth_hash: authHash,
+        enc_salt: encSalt,
+        text: await encryptText(''),
+        version: 0
+      })
+    });
+    if (!response.ok) throw new Error('Unable to create pad');
+    version = (await response.json()).version;
+    applyRemoteText('');
+    showEditor();
+    setStatus('saved', 'ok');
+  }
+
+  async function openPad(meta) {
+    encrypted = meta.encrypted;
+    if (encrypted) {
+      if (!password) {
+        showAuth('');
+        return;
+      }
+      authHash = await deriveAuthHash(password, meta.auth_salt);
+      aesKey = await deriveKey(password, meta.enc_salt);
+      lockIcon.textContent = '\u{1F512}';
+    }
+    const response = await fetchDocument();
+    if (response.status === 403) {
+      authHash = '';
+      aesKey = null;
+      showAuth('Authentication failed.');
+      return;
+    }
+    if (!response.ok) throw new Error('Unable to open pad');
+    const data = await response.json();
+    applyRemoteText(await decryptText(data.text));
+    version = data.version;
+    dirty = false;
+    showEditor();
+    setStatus('saved', 'ok');
+  }
+
+  async function initialize() {
+    try {
+      setStatus('opening', 'warn');
+      const response = await fetch('/api/pads/' + encodeURIComponent(padName) + '/meta', {
+        cache: 'no-store'
+      });
+      if (!response.ok) throw new Error('Unable to read pad metadata');
+      const meta = await response.json();
+      if (!meta.exists) {
+        if (!wantsCreate) {
+          showAuth('Pad does not exist. Create it from the home page.');
+          return;
+        }
+        await createPad(meta);
+      } else {
+        await openPad(meta);
+      }
+      if (!pollTimer) pollTimer = setInterval(poll, 500);
+    } catch (error) {
+      setStatus(error.message || 'Unable to open pad', 'err');
+      if (!opened) showAuth(error.message || 'Unable to open pad');
+    }
+  }
+
+  document.getElementById('auth-form').addEventListener('submit', function(event) {
+    event.preventDefault();
+    password = document.getElementById('auth-password').value;
+    authError.textContent = '';
+    initialize();
+  });
+
+  textarea.addEventListener('input', function() {
+    dirty = true;
+    resizeEditor();
+    updateGutter();
+    updateLineInfo();
+    setStatus('unsaved', 'warn');
+    scheduleSave();
+  });
+  textarea.addEventListener('click', updateLineInfo);
+  textarea.addEventListener('keyup', updateLineInfo);
+  textarea.addEventListener('keydown', function(event) {
+    if (event.key !== 'Tab') return;
+    event.preventDefault();
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    textarea.value = textarea.value.slice(0, start) + '  ' + textarea.value.slice(end);
+    textarea.selectionStart = textarea.selectionEnd = start + 2;
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
+  let resizeTimer;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+      resizeEditor();
+      updateGutter();
+    }, 100);
+  });
+
+  const storedFor = sessionStorage.getItem('pad_password_for');
+  const storedPassword = sessionStorage.getItem('pad_password');
+  if (storedFor === padName && storedPassword !== null) {
+    password = storedPassword;
+    wantsCreate = sessionStorage.getItem('pad_create') === '1';
+    sessionStorage.removeItem('pad_password');
+    sessionStorage.removeItem('pad_password_for');
+    sessionStorage.removeItem('pad_create');
+  }
+  initialize();
 })();
 </script>
 </body>

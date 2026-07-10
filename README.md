@@ -2,14 +2,14 @@
 
 Minimal collaborative plain-text editor deployed at <https://keyconcept.site/>.
 
-- Real-time sync via WebSocket
+- Fast synchronization through short HTTP requests
 - AES-256-GCM encryption in the browser for protected pads
 - Separate static auth hash for server-side access checks
 - Open or password-protected pads
 - Always-dark interface
 - Logical line numbers with stable no-wrap editor behavior
 - Automatic pad expiry and scheduled full cleanup
-- One active editor with live read-only viewers
+- Every open browser can edit
 - No accounts, no formatting, no history
 
 ## How To Use
@@ -35,10 +35,10 @@ Usage rules:
 ## Technical Overview
 
 - **Frontend:** vanilla HTML/CSS/JS served by `nginx`
-- **Backend:** single Python WebSocket server using `websockets`
-- **Proxy:** `nginx` terminates TLS and proxies `/ws/` to `127.0.0.1:8765`
+- **Backend:** Python standard-library HTTP server
+- **Proxy:** `nginx` terminates TLS and proxies `/api/` to `127.0.0.1:8765`
 - **Storage:** one `*.txt` file per pad and one `*.meta.json` file per pad
-- **Transport:** browser uses `https://` and `wss://`
+- **Transport:** same-origin HTTPS requests
 
 Pad model:
 
@@ -65,19 +65,19 @@ Important security note:
 ## Sync Model
 
 - Each client keeps a full local copy of the document.
-- After `300 ms` of typing inactivity, the client queues the full document over WebSocket.
-- The first connected browser is the active editor. Other connected browsers are live read-only viewers.
-- Only the editor can send updates, so competing full-document writes and merge conflicts cannot occur.
-- Each browser keeps at most one save in flight and sends later editor changes after acknowledgement.
-- The server stores each accepted document atomically, acknowledges it, and broadcasts it to viewers.
-- If the editor disconnects, one connected viewer is promoted automatically.
+- After `250 ms` of typing inactivity, a browser saves the full document with a short HTTP `PUT`.
+- Browsers check the stored revision every `500 ms`; unchanged checks return no document body.
+- Every browser can edit. There are no persistent connections, reconnect states, locks, editor roles, or client counts.
+- Each browser keeps at most one save request in flight and sends later changes after acknowledgement.
+- The server serializes writes per pad and stores accepted text atomically.
+- A save based on a stale revision is not applied. The browser keeps its local text and reports that another browser changed the pad.
 
 Implications:
 
 - This is full-document sync, not patch-based sync.
-- There is no merge, OT, or CRDT logic.
-- This deliberately avoids OT, CRDTs, client merges, and simultaneous writers.
-- The toolbar shows whether the browser is the editor or a viewer and distinguishes `unsaved`, `saving`, `saved`, and disconnected states.
+- There is no merge, OT, CRDT, persistent session, or distributed lock logic.
+- Normal sequential editing propagates in about half a second. Truly simultaneous writes are detected instead of silently overwriting stored text.
+- The toolbar distinguishes `unsaved`, `saving`, `saved`, stale revision, and offline retry states.
 
 ## Data Lifecycle
 
@@ -105,7 +105,7 @@ sudo systemctl restart textpads-full-cleanup.timer
 
 ## Stack
 
-- **Backend:** Python 3 + `websockets`
+- **Backend:** Python 3 standard library
 - **Frontend:** vanilla HTML/CSS/JS
 - **Proxy:** `nginx` with TLS
 
@@ -117,7 +117,7 @@ systemd files already contain that production domain.
 1. Confirm DNS and the existing Let's Encrypt certificate for `keyconcept.site` and `www.keyconcept.site`.
 2. Review the clean Git diff and run `bash deploy.sh` for first installation.
 3. Run `bash update.sh` for later deployments.
-4. Verify `pad.service`, nginx, HTTPS, WebSocket synchronization, and the cleanup timer.
+4. Verify `pad.service`, nginx, HTTPS, two-browser save/poll synchronization, and the cleanup timer.
 
 Note:
 
@@ -144,7 +144,7 @@ source of truth; both machine checkouts should be clean and at that revision.
 
 - nginx terminates TLS, redirects HTTP and `www`, applies request limits, and sends restrictive browser security headers.
 - The backend accepts only the configured browser origin and is not publicly exposed.
-- Pad names are validated, message size and connection counts are bounded, and failed authentication is rate-limited.
+- Pad names and request sizes are bounded, writes require the expected revision and same origin, and failed authentication is rate-limited.
 - The systemd service uses a dedicated user and filesystem/kernel hardening.
 - Protected-pad content is encrypted in the browser with AES-256-GCM and a PBKDF2-derived key.
 - This provides reasonable protection for non-sensitive temporary notes, not protection from a malicious server or modified frontend JavaScript.
