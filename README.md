@@ -114,6 +114,9 @@ sudo systemctl restart textpads-full-cleanup.timer
 This repository is the deployment source for `textpads.keyconcept.top`. Its nginx and
 systemd files already contain that production domain.
 
+The former `https://keyconcept.site/` endpoint temporarily redirects to the
+canonical hostname while that domain is deprecated.
+
 1. Confirm DNS and the existing Let's Encrypt certificate for `textpads.keyconcept.top`.
 2. Review the clean Git diff and run `bash deploy.sh` for first installation.
 3. Run `bash update.sh` for later deployments.
