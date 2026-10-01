@@ -25,6 +25,7 @@ sudo install -o root -g root -m 0644 "$REPO_DIR/static/"* /opt/pad/static/
 echo "=== Nginx config ==="
 sudo cp "$REPO_DIR/pad-ratelimit.conf" /etc/nginx/conf.d/pad-ratelimit.conf
 sudo cp "$REPO_DIR/pad-nginx.conf" /etc/nginx/sites-available/pad
+sudo install -D -o root -g root -m 0755 "$REPO_DIR/certbot-nginx-reload.sh" /etc/letsencrypt/renewal-hooks/deploy/textpads-nginx-reload
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo ln -sf /etc/nginx/sites-available/pad /etc/nginx/sites-enabled/pad
 sudo nginx -t

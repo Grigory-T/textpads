@@ -14,6 +14,7 @@ sudo install -o root -g root -m 0644 "$REPO_DIR/static/"* /opt/pad/static/
 echo "=== Update configs ==="
 sudo cp "$REPO_DIR/pad-ratelimit.conf" /etc/nginx/conf.d/pad-ratelimit.conf
 sudo cp "$REPO_DIR/pad-nginx.conf" /etc/nginx/sites-available/pad
+sudo install -D -o root -g root -m 0755 "$REPO_DIR/certbot-nginx-reload.sh" /etc/letsencrypt/renewal-hooks/deploy/textpads-nginx-reload
 sudo cp "$REPO_DIR/pad.service" /etc/systemd/system/pad.service
 sudo cp "$REPO_DIR/textpads-full-cleanup.service" /etc/systemd/system/textpads-full-cleanup.service
 sudo cp "$REPO_DIR/textpads-full-cleanup.timer" /etc/systemd/system/textpads-full-cleanup.timer

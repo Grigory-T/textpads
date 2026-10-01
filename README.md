@@ -139,6 +139,7 @@ Note:
 - Cleanup command: `/usr/local/bin/textpads-full-cleanup.sh`
 - nginx site: `/etc/nginx/sites-available/pad`
 - TLS lineage: `/etc/letsencrypt/live/textpads.keyconcept.top/`
+- Certbot deploy hook: `/etc/letsencrypt/renewal-hooks/deploy/textpads-nginx-reload`
 
 `/opt/pad` is a copied runtime tree, not a Git checkout. GitHub `master` is the
 source of truth; both machine checkouts should be clean and at that revision.
