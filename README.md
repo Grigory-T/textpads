@@ -1,6 +1,6 @@
 # Textpads
 
-Minimal collaborative plain-text editor deployed at <https://keyconcept.site/>.
+Minimal collaborative plain-text editor deployed at <https://textpads.keyconcept.top/>.
 
 - Fast synchronization through short HTTP requests
 - AES-256-GCM encryption in the browser for protected pads
@@ -111,10 +111,10 @@ sudo systemctl restart textpads-full-cleanup.timer
 
 ## Deploy
 
-This repository is the deployment source for `keyconcept.site`. Its nginx and
+This repository is the deployment source for `textpads.keyconcept.top`. Its nginx and
 systemd files already contain that production domain.
 
-1. Confirm DNS and the existing Let's Encrypt certificate for `keyconcept.site` and `www.keyconcept.site`.
+1. Confirm DNS and the existing Let's Encrypt certificate for `textpads.keyconcept.top`.
 2. Review the clean Git diff and run `bash deploy.sh` for first installation.
 3. Run `bash update.sh` for later deployments.
 4. Verify `pad.service`, nginx, HTTPS, two-browser save/poll synchronization, and the cleanup timer.
@@ -135,7 +135,7 @@ Note:
 - Cleanup units: `/etc/systemd/system/textpads-full-cleanup.{service,timer}`
 - Cleanup command: `/usr/local/bin/textpads-full-cleanup.sh`
 - nginx site: `/etc/nginx/sites-available/pad`
-- TLS lineage: `/etc/letsencrypt/live/keyconcept.site/`
+- TLS lineage: `/etc/letsencrypt/live/textpads.keyconcept.top/`
 
 `/opt/pad` is a copied runtime tree, not a Git checkout. GitHub `master` is the
 source of truth; both machine checkouts should be clean and at that revision.

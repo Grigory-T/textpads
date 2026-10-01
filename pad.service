@@ -13,7 +13,7 @@ RestartSec=3
 Environment=PAD_DATA_DIR=/opt/pad/data
 Environment=PAD_HOST=127.0.0.1
 Environment=PAD_PORT=8765
-Environment=PAD_ALLOWED_ORIGINS=https://keyconcept.site
+Environment=PAD_ALLOWED_ORIGINS=https://textpads.keyconcept.top
 Environment=PAD_EXPIRY_DAYS=7
 Environment=PAD_EXPIRY_SCAN_MINUTES=15
 

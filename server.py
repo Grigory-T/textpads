@@ -22,6 +22,7 @@ MAX_TEXT_SIZE = 2_800_000
 AUTH_FAILURE_WINDOW = 300
 MAX_AUTH_FAILURES_IP = 10
 DEFAULT_EXPIRY_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_EXPIRY_SCAN_SECONDS = 15 * 60
 PAD_EXPIRY_SECONDS = DEFAULT_EXPIRY_SECONDS
 ALLOWED_ORIGINS = set()
 
@@ -367,9 +368,9 @@ class PadHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"version": meta["version"]})
 
 
-def cleanup_loop():
+def cleanup_loop(interval_seconds):
     while True:
-        time.sleep(15 * 60)
+        time.sleep(interval_seconds)
         purge_expired()
 
 
@@ -378,13 +379,22 @@ def main():
     days = int_env("PAD_EXPIRY_DAYS", 7)
     seconds = int_env("PAD_EXPIRY_SECONDS", 0)
     PAD_EXPIRY_SECONDS = seconds if seconds > 0 else days * 24 * 60 * 60
+    scan_minutes = int_env(
+        "PAD_EXPIRY_SCAN_MINUTES", DEFAULT_EXPIRY_SCAN_SECONDS // 60
+    )
+    scan_seconds = int_env("PAD_EXPIRY_SCAN_SECONDS", 0)
+    scan_interval = (
+        scan_seconds
+        if scan_seconds > 0
+        else max(1, scan_minutes) * 60
+    )
     ALLOWED_ORIGINS = {
         value.strip()
         for value in os.environ.get("PAD_ALLOWED_ORIGINS", "").split(",")
         if value.strip()
     }
     purge_expired()
-    threading.Thread(target=cleanup_loop, daemon=True).start()
+    threading.Thread(target=cleanup_loop, args=(scan_interval,), daemon=True).start()
     host = os.environ.get("PAD_HOST", "127.0.0.1")
     port = int_env("PAD_PORT", 8765)
     server = ThreadingHTTPServer((host, port), PadHandler)
